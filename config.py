@@ -3,18 +3,18 @@
 """
 import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from tomlkit.items import Null
+
 
 
 class Settings(BaseSettings):
     """
     Класс настройки, автоматически подтягивает из .env данные
     """
-    DB_USER: str = Null
-    DB_PASSWORD: str = Null
-    DB_HOST: str = Null
-    DB_PORT: int = Null
-    DB_NAME: str = Null
+    DB_USER: str
+    DB_PASSWORD: str
+    DB_HOST: str
+    DB_PORT: int
+    DB_NAME: str
 
     # Получение из файла .env данных для DB
     model_config = SettingsConfigDict(

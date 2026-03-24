@@ -24,13 +24,13 @@ class Base(DeclarativeBase):
     def __tablename__(cls) -> str:
         return cls.__name__.lower() + 's'
 
-class Group(Base):
+class Group(Base):  # ya natural
     # Столбцы модели
     name: Mapped[str] = mapped_column(String(16))
 
     # Связи
-    students: Mapped[List["Student"]] = relationship(back_populates="group", cascade="all, delete-orphan")
-    schedules: Mapped[List["Schedule"]] = relationship(back_populates="group", cascade="all, delete-orphan")
+    students: Mapped[List["Student"]] = relationship(back_populates="groups", cascade="all, delete-orphan")
+    schedules: Mapped[List["Schedule"]] = relationship(back_populates="groups", cascade="all, delete-orphan")
 
 
 class Student(Base):
@@ -41,7 +41,10 @@ class Student(Base):
     patronymic: Mapped[Optional[str]] = mapped_column(String(128))
 
     # Связи
-    group: Mapped["Group"] = relationship(back_populates="students")
+    groups: Mapped["Group"] = relationship(back_populates="students")
+    attendances: Mapped["Attendance"] = relationship(back_populates="students")
+    marks: Mapped["Mark"] = relationship(back_populates="students")
+    comments: Mapped["Comment"] = relationship(back_populates="students")
 
 
 class Schedule(Base):
@@ -52,8 +55,52 @@ class Schedule(Base):
     time: Mapped[datetime] = mapped_column(DateTime)
 
     # Связи
-    group: Mapped["Group"] = relationship(back_populates="schedules")
+    groups: Mapped["Group"] = relationship(back_populates="schedules")
+    lessons: Mapped["Lesson"] = relationship(back_populates="schedules")
 
+
+class Lesson(Base):
+    id_schedule: Mapped[int] = mapped_column(ForeignKey("schedules.id"))
+    type: Mapped[str] = mapped_column(String(64))
+    topic: Mapped[str] = mapped_column(String(512))
+    is_assessment: Mapped[bool] = mapped_column(default=False)
+    date: Mapped[datetime] = mapped_column(DateTime)
+
+    # Связи
+    schedules: Mapped["Schedule"] = relationship(back_populates="lessons")
+    attendances: Mapped[List["Attendance"]] = relationship(back_populates="lessons")
+    marks: Mapped[List["Mark"]] = relationship(back_populates="lessons")
+    comments: Mapped[List["Comment"]] = relationship(back_populates="lessons")
+
+
+class Attendance(Base):
+    id_student: Mapped[int] = mapped_column(ForeignKey("students.id"))
+    id_lesson: Mapped[int] = mapped_column(ForeignKey("lessons.id"))
+    is_visited: Mapped[bool] = mapped_column(default=True)
+
+    # Связи
+    lessons: Mapped["Lesson"] = relationship(back_populates="attendances")
+    students: Mapped["Student"] = relationship(back_populates="attendances")
+
+
+class Mark(Base):
+    id_student: Mapped[int] = mapped_column(ForeignKey("students.id"))
+    id_lesson: Mapped[int] = mapped_column(ForeignKey("lessons.id"))
+    data: Mapped[int] = mapped_column(Integer)
+
+    # Связи
+    lessons: Mapped["Lesson"] = relationship(back_populates="marks")
+    students: Mapped["Student"] = relationship(back_populates="marks")
+
+
+class Comment(Base):
+    id_student: Mapped[int] = mapped_column(ForeignKey("students.id"))
+    id_lesson: Mapped[int] = mapped_column(ForeignKey("lessons.id"))
+    data: Mapped[str] = mapped_column(String(2**32))
+
+    # Связи
+    lessons: Mapped["Lesson"] = relationship(back_populates="comments")
+    students: Mapped["Student"] = relationship(back_populates="comments")
 
 test_engine = create_engine("sqlite:///:memory:")
 TestSessionLocal = sessionmaker(bind=test_engine)
@@ -104,8 +151,8 @@ def test():
             student_from_db = session.scalars(stmt).first()
 
             assert student_from_db is not None, "Студент не найден в БД"
-            assert student_from_db.group.name == "ПИ-201", "Ошибка связи: Неверное имя группы у студента"
-            print(f"✅ Связь Student -> Group работает (Группа: {student_from_db.group.name})")
+            assert student_from_db.groups.name == "ПИ-201", "Ошибка связи: Неверное имя группы у студента"
+            print(f"✅ Связь Student -> Group работает (Группа: {student_from_db.groups.name})")
 
             # Проверяем обратную связь: Группа -> Список студентов
             assert len(new_group.students) == 1, "Ошибка связи: Студент не отображается в списке группы"
