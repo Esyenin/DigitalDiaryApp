@@ -3,7 +3,7 @@
 """
 from datetime import datetime
 from typing import List, Optional
-from sqlalchemy import create_engine, ForeignKey, func, String, Integer, Boolean, select, DateTime
+from sqlalchemy import create_engine, ForeignKey, func, String, Integer, select, DateTime
 from sqlalchemy.orm import DeclarativeBase, declared_attr, Mapped, mapped_column, relationship, sessionmaker
 from config import settings
 
@@ -29,8 +29,8 @@ class Group(Base):
     name: Mapped[str] = mapped_column(String(16))
 
     # Связи
-    students: Mapped[List["Student"]] = relationship(back_populates="group", cascade="all, delete-orphan")
-    schedules: Mapped[List["Schedule"]] = relationship(back_populates="group", cascade="all, delete-orphan")
+    students: Mapped[List["Student"]] = relationship(back_populates="groups", cascade="all, delete-orphan")
+    schedules: Mapped[List["Schedule"]] = relationship(back_populates="groups", cascade="all, delete-orphan")
 
 
 class Student(Base):
@@ -41,7 +41,7 @@ class Student(Base):
     patronymic: Mapped[Optional[str]] = mapped_column(String(128))
 
     # Связи
-    group: Mapped["Group"] = relationship(back_populates="students")
+    groups: Mapped["Group"] = relationship(back_populates="students")
 
 
 class Schedule(Base):
@@ -52,7 +52,7 @@ class Schedule(Base):
     time: Mapped[datetime] = mapped_column(DateTime)
 
     # Связи
-    group: Mapped["Group"] = relationship(back_populates="schedules")
+    groups: Mapped["Group"] = relationship(back_populates="schedules")
 
 
 test_engine = create_engine("sqlite:///:memory:")
@@ -104,8 +104,8 @@ def test():
             student_from_db = session.scalars(stmt).first()
 
             assert student_from_db is not None, "Студент не найден в БД"
-            assert student_from_db.group.name == "ПИ-201", "Ошибка связи: Неверное имя группы у студента"
-            print(f"✅ Связь Student -> Group работает (Группа: {student_from_db.group.name})")
+            assert student_from_db.groups.name == "ПИ-201", "Ошибка связи: Неверное имя группы у студента"
+            print(f"✅ Связь Student -> Group работает (Группа: {student_from_db.groups.name})")
 
             # Проверяем обратную связь: Группа -> Список студентов
             assert len(new_group.students) == 1, "Ошибка связи: Студент не отображается в списке группы"
