@@ -3,7 +3,7 @@
 """
 from datetime import datetime
 from typing import List, Optional
-from sqlalchemy import create_engine, ForeignKey, func, String, Integer, select, DateTime
+from sqlalchemy  import create_engine, ForeignKey, func, String, Integer, Boolean, select, DateTime, event
 from sqlalchemy.orm import DeclarativeBase, declared_attr, Mapped, mapped_column, relationship, sessionmaker
 from config import settings
 
@@ -24,7 +24,7 @@ class Base(DeclarativeBase):
     def __tablename__(cls) -> str:
         return cls.__name__.lower() + 's'
 
-class Group(Base):
+class Group(Base):  # ya natural
     # Столбцы модели
     name: Mapped[str] = mapped_column(String(16))
 
@@ -42,6 +42,9 @@ class Student(Base):
 
     # Связи
     groups: Mapped["Group"] = relationship(back_populates="students")
+    attendances: Mapped[List["Attendance"]] = relationship(back_populates="students", cascade="all, delete")
+    marks: Mapped[List["Mark"]] = relationship(back_populates="students", cascade="all, delete")
+    comments: Mapped[List["Comment"]] = relationship(back_populates="students", cascade="all, delete")
 
 
 class Schedule(Base):
@@ -53,78 +56,176 @@ class Schedule(Base):
 
     # Связи
     groups: Mapped["Group"] = relationship(back_populates="schedules")
+    lessons: Mapped[List["Lesson"]] = relationship(back_populates="schedules", cascade="all, delete-orphan")
 
+
+class Lesson(Base):
+    id_schedule: Mapped[int] = mapped_column(ForeignKey("schedules.id"))
+    type: Mapped[str] = mapped_column(String(64))
+    topic: Mapped[str] = mapped_column(String(512))
+    is_assessment: Mapped[bool] = mapped_column(default=False)
+    date: Mapped[datetime] = mapped_column(DateTime)
+
+    # Связи
+    schedules: Mapped["Schedule"] = relationship(back_populates="lessons")
+    attendances: Mapped[List["Attendance"]] = relationship(back_populates="lessons", cascade="all, delete")
+    marks: Mapped[List["Mark"]] = relationship(back_populates="lessons", cascade="all, delete")
+    comments: Mapped[List["Comment"]] = relationship(back_populates="lessons", cascade="all, delete")
+
+
+class Attendance(Base):
+    id_student: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"))
+    id_lesson: Mapped[int] = mapped_column(ForeignKey("lessons.id", ondelete="CASCADE"))
+    is_visited: Mapped[bool] = mapped_column(default=True)
+
+    # Связи
+    lessons: Mapped["Lesson"] = relationship(back_populates="attendances")
+    students: Mapped["Student"] = relationship(back_populates="attendances")
+
+
+class Mark(Base):
+    id_student: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"))
+    id_lesson: Mapped[int] = mapped_column(ForeignKey("lessons.id", ondelete="CASCADE"))
+    data: Mapped[int] = mapped_column(Integer)
+
+    # Связи
+    lessons: Mapped["Lesson"] = relationship(back_populates="marks")
+    students: Mapped["Student"] = relationship(back_populates="marks")
+
+
+class Comment(Base):
+    id_student: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"))
+    id_lesson: Mapped[int] = mapped_column(ForeignKey("lessons.id", ondelete="CASCADE"))
+    data: Mapped[str] = mapped_column(String(4096))
+
+    # Связи
+    lessons: Mapped["Lesson"] = relationship(back_populates="comments")
+    students: Mapped["Student"] = relationship(back_populates="comments")
 
 test_engine = create_engine("sqlite:///:memory:")
+
+@event.listens_for(test_engine, "connect")
+def set_sqlite_pragma(dbapi_conn, connection_record):
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
 TestSessionLocal = sessionmaker(bind=test_engine)
 
 
-def test():
-    # Создаем таблицы в тестовой БД на основе ваших моделей
+def test_relationships():
     Base.metadata.create_all(bind=test_engine)
-
-    # Создаем новую сессию
+    
     with TestSessionLocal() as session:
         try:
-            print("--- Запуск теста БД ---")
+            print("🧪 Запуск теста связей БД...")
 
-            # 1. Создаем группу
-            new_group = Group(name="ПИ-201")
-            session.add(new_group)
-            session.flush()  # Чтобы получить id группы для связей
+            # 1. Создаём группу
+            group = Group(name="ПИ-201")
+            session.add(group)
+            session.flush()
 
-            # 2. Создаем студента
-            new_student = Student(
-                id_group=new_group.id,
+            # 2. Создаём студента
+            student = Student(
+                id_group=group.id,
                 surname="Иванов",
                 first_name="Иван",
                 patronymic="Иванович"
             )
-            session.add(new_student)
+            session.add(student)
+            session.flush()
 
-            # 3. Создаем запись в расписании
-            # Используем datetime.now() для теста времени
+            # 3. Создаём расписание
             now = datetime.now()
-            new_schedule = Schedule(
-                id_group=new_group.id,
+            schedule = Schedule(
+                id_group=group.id,
                 odd_or_even="odd",
                 day=now,
                 time=now
             )
-            session.add(new_schedule)
+            session.add(schedule)
+            session.flush()
 
-            # Сохраняем всё в базу
+            # 4. Создаём урок
+            lesson = Lesson(
+                id_schedule=schedule.id,
+                type="lecture",
+                topic="Введение в БД",
+                date=now
+            )
+            session.add(lesson)
+            session.flush()
+
+            # 5. Создаём посещаемость, оценку, комментарий
+            attendance = Attendance(id_student=student.id, id_lesson=lesson.id, is_visited=True)
+            mark = Mark(id_student=student.id, id_lesson=lesson.id, data=5)
+            comment = Comment(id_student=student.id, id_lesson=lesson.id, data="Молодец!")
+            session.add_all([attendance, mark, comment])
+
             session.commit()
-            print("✅ Данные успешно добавлены и закомичены.")
+            print("✅ Данные добавлены и закомичены")
 
-            # --- ПРОВЕРКИ (Assertions) ---
+            # === ПРОВЕРКИ ===
 
-            # Проверяем студента и его связь с группой
+            # 1. Student → Group
             stmt = select(Student).where(Student.surname == "Иванов")
-            student_from_db = session.scalars(stmt).first()
+            db_student = session.scalars(stmt).first()
+            assert db_student is not None
+            assert db_student.groups.name == "ПИ-201"
+            print("✅ Student.group → Group работает")
 
-            assert student_from_db is not None, "Студент не найден в БД"
-            assert student_from_db.groups.name == "ПИ-201", "Ошибка связи: Неверное имя группы у студента"
-            print(f"✅ Связь Student -> Group работает (Группа: {student_from_db.groups.name})")
+            # 2. Group → Students (обратная связь)
+            db_group = session.get(Group, group.id)
+            assert len(db_group.students) == 1
+            assert db_group.students[0].surname == "Иванов"
+            print("✅ Group.students → List[Student] работает")
 
-            # Проверяем обратную связь: Группа -> Список студентов
-            assert len(new_group.students) == 1, "Ошибка связи: Студент не отображается в списке группы"
-            print(f"✅ Связь Group -> Students работает (В группе {len(new_group.students)} чел.)")
+            # 3. Schedule → Group и обратно
+            db_schedule = session.get(Schedule, schedule.id)
+            assert db_schedule.groups.id == group.id
+            assert schedule in db_group.schedules
+            print("✅ Schedule ↔ Group связи работают")
 
-            # Проверяем автоматические колонки (Base)
-            assert student_from_db.created_at is not None, "Ошибка: created_at не заполнился"
-            print(f"✅ Базовые колонки (created_at) работают. Время создания: {student_from_db.created_at}")
+            # 4. Lesson → Schedule
+            db_lesson = session.get(Lesson, lesson.id)
+            assert db_lesson.schedules.id == schedule.id
+            print("✅ Lesson.schedule → Schedule работает")
 
-            print("\n--- Все тесты успешно пройдены! ---")
+            # 5. Студент → коллекции (Attendance, Mark, Comment)
+            assert len(db_student.attendances) == 1
+            assert len(db_student.marks) == 1
+            assert len(db_student.comments) == 1
+            assert db_student.marks[0].data == 5
+            assert db_student.comments[0].data == "Молодец!"
+            print("✅ Student → [Attendance, Mark, Comment] коллекции работают")
+
+            # 6. Урок → коллекции
+            assert len(db_lesson.attendances) == 1
+            assert len(db_lesson.marks) == 1
+            assert db_lesson.attendances[0].is_visited is True
+            print("✅ Lesson → [Attendance, Mark, Comment] коллекции работают")
+
+            # 7. Проверка created_at из базового класса
+            assert db_student.created_at is not None
+            print(f"✅ Базовые поля (created_at) работают: {db_student.created_at}")
+
+            # 8. Тест каскадного удаления (опционально)
+            session.delete(db_group)
+            session.commit()
+            session.expunge_all()  # Очищает кэш сессии, чтобы следующие запросы шли в БД
+            assert session.get(Student, student.id) is None  # студент удалён каскадом
+            assert session.get(Schedule, schedule.id) is None  # расписание тоже
+            print("✅ Cascade delete работает")
+
+            print("\n🎉 Все тесты пройдены успешно!")
 
         except Exception as e:
             session.rollback()
-            print(f"❌ Тест провален из-за ошибки: {e}")
-            raise e
+            print(f"❌ Ошибка в тесте: {e}")
+            raise
         finally:
-            # Удаляем таблицы после теста
             Base.metadata.drop_all(bind=test_engine)
 
 
 if __name__ == "__main__":
-    test()
+    test_relationships()
