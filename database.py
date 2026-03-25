@@ -3,9 +3,9 @@
 Используется SQLAlchemy 2.0 с декларативным стилем описания моделей.
 Подробное описание моделей и их связи смотри в pdf-диаграмме.
 """
-from datetime import datetime, time
+from datetime import datetime, date, time
 from typing import List, Optional
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Time, func
+from sqlalchemy import Boolean, Date, ForeignKey, Integer, String, Time, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column, relationship
 from config import settings
 
@@ -81,6 +81,8 @@ class Schedule(Base):
 
     # Столбцы модели
     odd_or_even: Mapped[str] = mapped_column(String(16))
+    type: Mapped[str] = mapped_column(String(64))
+    is_assessment: Mapped[bool] = mapped_column(Boolean, default=False)
     day: Mapped[str] = mapped_column(String(16))
     time: Mapped[time] = mapped_column(Time)
 
@@ -110,10 +112,8 @@ class Lesson(Base):
 
     # Столбцы модели
     schedule_id: Mapped[int] = mapped_column(ForeignKey("schedules.id"))
-    type: Mapped[str] = mapped_column(String(64))
     topic: Mapped[Optional[str]] = mapped_column(String(512))
-    is_assessment: Mapped[bool] = mapped_column(Boolean, default=False)
-    date: Mapped[datetime] = mapped_column(DateTime)
+    date: Mapped[date] = mapped_column(Date)
 
     # Связь с занятием в расписании (One-to-One)
     schedule: Mapped["Schedule"] = relationship(back_populates="lessons")
@@ -131,7 +131,7 @@ class Attendance(Base):
     # Столбцы модели
     student_id: Mapped[int] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"))
     lesson_id: Mapped[int] = mapped_column(ForeignKey("lessons.id", ondelete="CASCADE"))
-    is_visited: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_visited: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Связь с занятием в календаре (One-to-One)
     lesson: Mapped["Lesson"] = relationship(back_populates="attendances")

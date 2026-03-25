@@ -3,8 +3,8 @@
 Проверяет создание таблиц, корректность связей и работу с сессиями.
 """
 # pylint: disable=redefined-outer-name, import-error
-from datetime import datetime, time
-from sqlalchemy import create_engine
+from datetime import date, time
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 import pytest
 
@@ -54,6 +54,7 @@ def db_session(engine):
 
 
 # --- ТЕСТЫ ---
+
 
 def test_postgresql_connection(db_session):
     """Проверка физической записи и генерации ID в Postgres."""
@@ -158,8 +159,19 @@ def test_create_schedule(db_session):
     """Проверка базового создания расписания."""
 
     # Подготовка данных
-    my_schedule = Schedule(
+    my_schedule1 = Schedule(
         odd_or_even="odd",
+        type="семинар",
+        day="вт",
+        time=time(
+            hour=8,
+            minute=45
+        )
+    )
+    my_schedule2 = Schedule(
+        odd_or_even="even",
+        type="лекция",
+        is_assessment=True,
         day="пн",
         time=time(
             hour=10,
@@ -167,21 +179,33 @@ def test_create_schedule(db_session):
         )
     )
 
-    db_session.add(my_schedule)
+    db_session.add(my_schedule1)
+    db_session.add(my_schedule2)
     db_session.flush()
 
     # Получение данных из базы данных
-    db_schedule = db_session.get(Schedule, my_schedule.id)
+    db_schedule1 = db_session.get(Schedule, my_schedule1.id)
+    db_schedule2 = db_session.get(Schedule, my_schedule2.id)
 
     # Проверка
-    assert db_schedule is not None
-    assert db_schedule.id == my_schedule.id
-    assert db_schedule.odd_or_even == my_schedule.odd_or_even
-    assert db_schedule.day == my_schedule.day
-    assert db_schedule.time == my_schedule.time
+    assert db_schedule1 is not None
+    assert db_schedule1.id == my_schedule1.id
+    assert db_schedule1.odd_or_even == my_schedule1.odd_or_even
+    assert db_schedule1.type == my_schedule1.type
+    assert db_schedule1.is_assessment == my_schedule1.is_assessment
+    assert db_schedule1.day == my_schedule1.day
+    assert db_schedule1.time == my_schedule1.time
+
+    assert db_schedule2 is not None
+    assert db_schedule2.id == my_schedule2.id
+    assert db_schedule2.odd_or_even == my_schedule2.odd_or_even
+    assert db_schedule2.type == my_schedule2.type
+    assert db_schedule2.is_assessment == my_schedule2.is_assessment
+    assert db_schedule2.day == my_schedule2.day
+    assert db_schedule2.time == my_schedule2.time
 
     # Вывод
-    print(f" Удалось успешно создать расписание:\n\t{db_schedule}")
+    print(f" Удалось успешно создать расписание:\n\t{db_schedule1}\n\t{db_schedule2}")
 
 
 def test_create_schedule_group_link(db_session):
@@ -191,6 +215,7 @@ def test_create_schedule_group_link(db_session):
     my_group = Group(name="МТ10-11")
     my_schedule = Schedule(
         odd_or_even="even",
+        type="семинар",
         day="вт",
         time=time(
             hour=12,
@@ -201,16 +226,16 @@ def test_create_schedule_group_link(db_session):
     db_session.add_all([my_group, my_schedule])
     db_session.flush()
 
-    link = ScheduleGroupLink(
+    my_link = ScheduleGroupLink(
         group_id=my_group.id,
         schedule_id=my_schedule.id
     )
 
-    db_session.add(link)
+    db_session.add(my_link)
     db_session.flush()
 
     # Получение данных из базы данных
-    db_link = db_session.get(ScheduleGroupLink, link.id)
+    db_link = db_session.get(ScheduleGroupLink, my_link.id)
 
     # Проверка
     assert db_link is not None
@@ -230,6 +255,7 @@ def test_create_lesson(db_session):
     # Подготовка данных
     my_schedule = Schedule(
         odd_or_even="odd",
+        type="лекция",
         day="ср",
         time=time(
             hour=8,
@@ -241,15 +267,12 @@ def test_create_lesson(db_session):
 
     my_lesson1 = Lesson(
         schedule_id=my_schedule.id,
-        type="Семинар",
-        date=datetime(2026, 4, 1, 8, 30),
+        date=date(2026, 4, 1),
     )
     my_lesson2 = Lesson(
         schedule_id=my_schedule.id,
-        type="Лекция",
         topic="Информатика",
-        date=datetime(2026, 4, 1, 10, 30),
-        is_assessment=True
+        date=date(2026, 4, 1),
     )
     db_session.add(my_lesson1)
     db_session.add(my_lesson2)
@@ -263,18 +286,14 @@ def test_create_lesson(db_session):
     assert db_lesson1 is not None
     assert db_lesson1.id == my_lesson1.id
     assert db_lesson1.schedule_id == my_schedule.id
-    assert db_lesson1.type == my_lesson1.type
     assert db_lesson1.topic == my_lesson1.topic
     assert db_lesson1.date == my_lesson1.date
-    assert db_lesson1.is_assessment == my_lesson1.is_assessment
 
     assert db_lesson2 is not None
     assert db_lesson2.id == my_lesson2.id
     assert db_lesson2.schedule_id == my_schedule.id
-    assert db_lesson2.type == my_lesson2.type
     assert db_lesson2.topic == my_lesson2.topic
     assert db_lesson2.date == my_lesson2.date
-    assert db_lesson2.is_assessment == my_lesson2.is_assessment
 
     # Вывод
     print(f" Успешно созданы занятие в календаре:\n\t{db_lesson1}\n\t{db_lesson2}")
@@ -289,11 +308,11 @@ def test_create_attendance_mark_comments(db_session):
     db_session.flush()
 
     my_student = Student(group_id=my_group.id, surname="Петров", first_name="Петр")
-    my_schedule = Schedule(odd_or_even="odd", day="чт", time=time(13, 50))
+    my_schedule = Schedule(odd_or_even="odd", type="Семинар", day="чт", time=time(13, 50))
     db_session.add_all([my_student, my_schedule])
     db_session.flush()
 
-    my_lesson = Lesson(schedule_id=my_schedule.id, type="Семинар", date=datetime.now())
+    my_lesson = Lesson(schedule_id=my_schedule.id, date=date(2026, 3, 1))
     db_session.add(my_lesson)
     db_session.flush()
 
@@ -325,3 +344,137 @@ def test_create_attendance_mark_comments(db_session):
     # Вывод
     print(f" Успешно проставлены посещаемость, оценки и оставлен комментарий:"
           f"\n\t{db_attendance}\n\t{db_mark}\n\t{db_comment}")
+
+
+def test_simulate_db_app(db_session):
+    """
+    Проверка связей базы данных
+    Полная симуляция работы базы данных
+    """
+
+    # Создание групп
+    my_group_1 = Group(name="ИУ7-31")
+    my_group_2 = Group(name="СМ1-21Б")
+
+    db_session.add(my_group_1)
+    db_session.add(my_group_2)
+    db_session.flush()
+
+    # Создание студентов
+    my_student1_g1 = Student(group_id=my_group_1.id, surname="Петров", first_name="Петр")
+    my_student2_g1 = Student(group_id=my_group_1.id, surname="Иванов", first_name="Иван")
+    my_student1_g2 = Student(group_id=my_group_2.id, surname="Сидоров", first_name="Гриша")
+    my_student2_g2 = Student(group_id=my_group_2.id, surname="Попов", first_name="Алексей")
+
+    db_session.add(my_student1_g1)
+    db_session.add(my_student2_g1)
+    db_session.add(my_student1_g2)
+    db_session.add(my_student2_g2)
+    db_session.flush()
+
+    # Создание расписаний
+    my_schedule1 = Schedule(odd_or_even="even", type="Семинар", is_assessment=True, day="вт",
+                            time=time(hour=12,minute=0))
+    my_schedule2 = Schedule(odd_or_even="odd", type="Семинар", day="ср", time=time(hour=8, minute=30))
+    my_schedule3 = Schedule(odd_or_even="odd", type="Семинар", day="пт", time=time(hour=16, minute=50))
+
+    db_session.add(my_schedule1)
+    db_session.add(my_schedule2)
+    db_session.add(my_schedule3)
+    db_session.flush()
+
+    # Создание связей групп и расписаний
+    my_link1_g1 = ScheduleGroupLink(group_id=my_group_1.id,schedule_id=my_schedule1.id)
+    my_link2_g1 = ScheduleGroupLink(group_id=my_group_1.id, schedule_id=my_schedule2.id)
+    my_link1_g2 = ScheduleGroupLink(group_id=my_group_2.id, schedule_id=my_schedule1.id)
+    my_link2_g2 = ScheduleGroupLink(group_id=my_group_2.id, schedule_id=my_schedule3.id)
+
+    db_session.add(my_link1_g1)
+    db_session.add(my_link2_g1)
+    db_session.add(my_link1_g2)
+    db_session.add(my_link2_g2)
+    db_session.flush()
+
+    # Создание занятий
+    my_lesson1 = Lesson(schedule_id=my_schedule1.id, date=date(2026, 4, 1))
+    my_lesson2 = Lesson(schedule_id=my_schedule2.id, date=date(2026, 5, 1))
+    my_lesson3 = Lesson(schedule_id=my_schedule3.id, date=date(2026, 6, 1))
+
+    db_session.add(my_lesson1)
+    db_session.add(my_lesson2)
+    db_session.add(my_lesson3)
+    db_session.flush()
+
+    # Создание посещений
+    my_attendance_s1_g1_l1 = Attendance(student_id=my_student1_g1.id, lesson_id=my_lesson1.id, is_visited=True)
+    my_attendance_s2_g1_l1 = Attendance(student_id=my_student2_g1.id, lesson_id=my_lesson1.id)
+    my_attendance_s1_g2_l1 = Attendance(student_id=my_student1_g2.id, lesson_id=my_lesson1.id, is_visited=True)
+    my_attendance_s2_g2_l1 = Attendance(student_id=my_student2_g2.id, lesson_id=my_lesson1.id)
+
+    my_attendance_s1_g1_l2 = Attendance(student_id=my_student1_g1.id, lesson_id=my_lesson2.id, is_visited=True)
+    my_attendance_s2_g1_l2 = Attendance(student_id=my_student2_g1.id, lesson_id=my_lesson2.id, is_visited=True)
+
+    my_attendance_s1_g2_l3 = Attendance(student_id=my_student1_g2.id, lesson_id=my_lesson3.id, is_visited=True)
+    my_attendance_s2_g2_l3 = Attendance(student_id=my_student2_g2.id, lesson_id=my_lesson3.id)
+
+    db_session.add_all([my_attendance_s1_g1_l1, my_attendance_s2_g1_l1, my_attendance_s1_g2_l1, my_attendance_s2_g2_l1])
+    db_session.add_all([my_attendance_s1_g1_l2, my_attendance_s2_g1_l2])
+    db_session.add_all([my_attendance_s1_g2_l3, my_attendance_s2_g2_l3])
+    db_session.flush()
+
+    # Создание оценок
+    my_mark_s1_g1_l1 = Mark(student_id=my_student1_g1.id, lesson_id=my_lesson1.id, data=5)
+    my_mark_s1_g2_l1 = Mark(student_id=my_student1_g2.id, lesson_id=my_lesson1.id, data=4)
+    my_mark_s1_g1_l2 = Mark(student_id=my_student1_g1.id, lesson_id=my_lesson2.id, data=3)
+    my_mark_s2_g1_l2 = Mark(student_id=my_student2_g1.id, lesson_id=my_lesson2.id, data=3)
+    my_mark_s1_g2_l3 = Mark(student_id=my_student1_g2.id, lesson_id=my_lesson3.id, data=2)
+
+    db_session.add(my_mark_s1_g1_l1)
+    db_session.add(my_mark_s1_g2_l1)
+    db_session.add(my_mark_s1_g1_l2)
+    db_session.add(my_mark_s2_g1_l2)
+    db_session.add(my_mark_s1_g2_l3)
+    db_session.flush()
+
+    # Создание комментариев
+    my_comment_s1_g1_l1 = Comment(student_id=my_student1_g1.id, lesson_id=my_lesson1.id,
+                                  data="Отличная работа на семинаре")
+    db_session.add(my_comment_s1_g1_l1)
+    db_session.flush()
+
+    # --- ИТОГОВЫЕ ПРОВЕРКИ СВЯЗЕЙ ---
+
+    # 1. Проверяем, что занятие my_lesson1 (по расписанию my_schedule1) видят обе группы
+    db_lesson1 = db_session.get(Lesson, my_lesson1.id)
+    groups_on_lesson1 = [link.group.name for link in db_lesson1.schedule.group_links]
+    assert "ИУ7-31" in groups_on_lesson1
+    assert "СМ1-21Б" in groups_on_lesson1
+
+    # 2. Проверяем посещаемость для my_lesson1 (должно быть 4 записи)
+    assert len(db_lesson1.attendances) == 4
+    visited_count = len([a for a in db_lesson1.attendances if a.is_visited])
+    assert visited_count == 2  # Петров и Сидоров
+
+    # 3. Проверяем "путь" от оценки до названия группы через студента
+    db_mark_s1_g1_l1 = db_session.get(Mark, my_mark_s1_g1_l1.id)
+    assert db_mark_s1_g1_l1.student.group.name == "ИУ7-31"
+
+    # 4. Проверяем каскадное удаление: удалим вторую группу и проверим связи
+    db_session.delete(my_group_2)
+    db_session.flush()
+
+    # 5. Студенты группы 2 должны исчезнуть
+    check_student = db_session.get(Student, my_student1_g2.id)
+    assert check_student is None
+
+    # 6. Связи в ScheduleGroupLink для этой группы тоже должны удалиться автоматически
+    remaining_links = db_session.execute(
+        select(ScheduleGroupLink).where(ScheduleGroupLink.group_id == my_group_2.id)
+    ).scalars().all()
+    assert len(remaining_links) == 0
+
+    # Вывод
+    print("\n[SUCCESS] Полная симуляция работы БД пройдена:")
+    print(f"- Группы на занятии 1: {', '.join(groups_on_lesson1)}")
+    print(f"- Посещаемость занятия 1 проверена")
+    print(f"- Каскадное удаление группы и её студентов подтверждено")
