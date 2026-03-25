@@ -9,7 +9,15 @@ from sqlalchemy.orm import sessionmaker
 import pytest
 
 # Импорты моделей и настроек проекта
-from database import Base, Group, Student, ScheduleGroupLink, Schedule, Lesson, Attendance, Mark, Comment
+from app.database import Base
+from app.models.attendance import Attendance
+from app.models.comment import Comment
+from app.models.group import Group
+from app.models.lesson import Lesson
+from app.models.mark import Mark
+from app.models.schedule import Schedule
+from app.models.schedule_group_link import ScheduleGroupLink
+from app.models.student import Student
 from config import settings
 
 # Глобальный URL для подключения к тестовой БД
@@ -474,7 +482,4 @@ def test_simulate_db_app(db_session):
     assert len(remaining_links) == 0
 
     # Вывод
-    print("\n[SUCCESS] Полная симуляция работы БД пройдена:")
-    print(f"- Группы на занятии 1: {', '.join(groups_on_lesson1)}")
-    print(f"- Посещаемость занятия 1 проверена")
-    print(f"- Каскадное удаление группы и её студентов подтверждено")
+    print(" Полная симуляция работы БД пройдена.")
