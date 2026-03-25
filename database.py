@@ -3,24 +3,10 @@
 Используется SQLAlchemy 2.0 с декларативным стилем описания моделей.
 Подробное описание моделей и их связи смотри в pdf-диаграмме.
 """
-from datetime import datetime
+from datetime import datetime, time
 from typing import List, Optional
-from sqlalchemy import (
-    Boolean,
-    DateTime,
-    ForeignKey,
-    Integer,
-    String,
-    Time,
-    func
-)
-from sqlalchemy.orm import (
-    DeclarativeBase,
-    Mapped,
-    declared_attr,
-    mapped_column,
-    relationship
-)
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Time, func
+from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column, relationship
 from config import settings
 
 
@@ -90,6 +76,21 @@ class Student(Base):
     comments: Mapped[List["Comment"]] = relationship(back_populates="student", cascade="all, delete")
 
 
+class Schedule(Base):
+    """Модель правила расписания (шаблон занятия)."""
+
+    # Столбцы модели
+    odd_or_even: Mapped[str] = mapped_column(String(16))
+    day: Mapped[str] = mapped_column(String(16))
+    time: Mapped[time] = mapped_column(Time)
+
+    # Связи с группами на занятии (One-to-Many)
+    group_links: Mapped[List["ScheduleGroupLink"]] = relationship(back_populates="schedule",
+                                                                  cascade="all, delete-orphan")
+    # Связи с занятиями в календаре (One-to-Many)
+    lessons: Mapped[List["Lesson"]] = relationship(back_populates="schedule", cascade="all, delete-orphan")
+
+
 class ScheduleGroupLink(Base):
     """Ассоциативная модель для связи Групп и Расписания."""
 
@@ -102,20 +103,6 @@ class ScheduleGroupLink(Base):
     # Связь с занятием в расписании (One-to-One)
     schedule: Mapped["Schedule"] = relationship(back_populates="group_links")
 
-
-class Schedule(Base):
-    """Модель правила расписания (шаблон занятия)."""
-
-    # Столбцы модели
-    odd_or_even: Mapped[str] = mapped_column(String(16))
-    day: Mapped[datetime] = mapped_column(DateTime)
-    time: Mapped[datetime] = mapped_column(Time)
-
-    # Связи с группами на занятии (One-to-Many)
-    group_links: Mapped[List["ScheduleGroupLink"]] = relationship(back_populates="schedule",
-                                                                  cascade="all, delete-orphan")
-    # Связи с занятиями в календаре (One-to-Many)
-    lessons: Mapped[List["Lesson"]] = relationship(back_populates="schedule", cascade="all, delete-orphan")
 
 
 class Lesson(Base):
