@@ -5,7 +5,7 @@ from datetime import date
 from typing import List, Optional
 from sqlalchemy import Date, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from ..database import Base
+from app.models.base import Base
 
 
 class Lesson(Base):
