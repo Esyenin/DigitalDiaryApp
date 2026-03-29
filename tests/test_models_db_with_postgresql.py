@@ -1,5 +1,5 @@
 """
-Тестирование базы данных PostgreSQL с использованием pytest.
+Тестирование базы данных postgreSQL с использованием pytest.
 Проверяет создание таблиц, корректность связей и работу с сессиями.
 """
 # pylint: disable=redefined-outer-name, import-error
@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 import pytest
 
 # Импорты моделей и настроек проекта
-from app.database import Base
+from app.models.base import Base
 from app.models.attendance import Attendance
 from app.models.comment import Comment
 from app.models.group import Group

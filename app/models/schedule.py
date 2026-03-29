@@ -5,7 +5,7 @@ from datetime import time
 from typing import List
 from sqlalchemy import Boolean, String, Time
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from ..database import Base
+from app.models.base import Base
 
 
 class Schedule(Base):
