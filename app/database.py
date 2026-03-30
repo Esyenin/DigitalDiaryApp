@@ -1,39 +1,61 @@
+# database.py
 """
-Реализация архитектуры базы данных для приложения (электронный дневник).
-Используется SQLAlchemy 2.0 с декларативным стилем описания моделей.
+Конфигурация базы данных
 """
-from datetime import datetime
-from sqlalchemy import Integer, func
-from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
-from config import settings
+import sys
+from pathlib import Path
+
+# Добавляем корень проекта в путь
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+from config import settings  # ← Без app.!
+
+# ========== НАСТРОЙКИ БД ==========
+DB_URL = settings.get_db_url()
+
+# ========== ДВИЖОК ==========
+engine = create_engine(
+    DB_URL,
+    echo=False,
+    pool_pre_ping=True,
+    pool_size=10,
+    max_overflow=20
+)
+
+# ========== СЕССИЯ ==========
+SessionLocal = sessionmaker(
+    bind=engine,
+    autoflush=False,
+    autocommit=False
+)
+
+# ========== БАЗОВЫЙ КЛАСС ==========
+Base = declarative_base()
 
 
-# URL-адрес базы данных
-DATABASE_URL = settings.get_db_url()
-
-
-class Base(DeclarativeBase):
+# ========== ФУНКЦИИ ==========
+def get_session():
     """
-    Абстрактный базовый класс.
-    Содержит общие поля (id, даты создания и обновления) и логику именования таблиц.
+    Генератор сессий для работы с БД
     """
+    session = SessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
 
-    # Абстрактность
-    __abstract__ = True
 
-    # Базовые столбцы модели
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(), onupdate=func.now())
+def create_tables():
+    """
+    Создать все таблицы в БД
+    """
+    Base.metadata.create_all(bind=engine)
 
-    @declared_attr.directive
-    def __tablename__(self) -> str:
-        """Автоматическое именование таблиц во множественном числе (добавление 's')."""
-        return self.__name__.lower() + 's'
 
-    def __repr__(self) -> str:
-        """Автоматическое текстовое представление всех моделей."""
-        cols = []
-        for col in self.__table__.columns.keys():
-            cols.append(f"{col}={getattr(self, col)}")
-        return f"<{self.__class__.__name__}({', '.join(cols[:4])})>"
+def drop_tables():
+    """
+    Удалить все таблицы в БД
+    """
+    Base.metadata.drop_all(bind=engine)
