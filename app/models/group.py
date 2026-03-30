@@ -6,6 +6,10 @@ from sqlalchemy import String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
+MAX_LEN = {
+    "name": 16,
+    "speciality": 128
+}
 
 class Group(Base):
     """
@@ -15,8 +19,8 @@ class Group(Base):
     """
 
     # Столбцы модели
-    name: Mapped[str] = mapped_column(String(16))
-    speciality: Mapped[Optional[str]] = mapped_column(String(128))
+    name: Mapped[str] = mapped_column(String(MAX_LEN["name"]))
+    speciality: Mapped[Optional[str]] = mapped_column(String(MAX_LEN["speciality"]))
 
     # Связи с занятиями в расписании (One-to-Many)
     schedule_links: Mapped[List["ScheduleGroupLink"]] = relationship(back_populates="group",

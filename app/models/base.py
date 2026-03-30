@@ -1,8 +1,8 @@
 """
 Модель базовая для всех моделей проекта
 """
-import inflect
 from datetime import datetime
+import inflect
 from sqlalchemy import Integer, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
 
@@ -26,11 +26,15 @@ class Base(DeclarativeBase):
         """
         Автоматическое именование таблиц во множественном числе.
         С учетом правильного образования слова.
+        :returns Возвращает строку с названием.
         """
         return inflect.engine().plural(self.__name__.lower())
 
     def __repr__(self) -> str:
-        """Автоматическое текстовое представление всех моделей."""
+        """
+        Автоматическое текстовое представление всех моделей.
+        :returns Возвращает строку с данными модели.
+        """
         cols = []
         for col in self.__table__.columns.keys():
             cols.append(f"{col}={getattr(self, col)}")

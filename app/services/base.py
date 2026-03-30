@@ -1,190 +1,171 @@
 """
 Сервис базовый для всех сервисов проекта.
 """
-from typing import TypeVar, Generic, Type, List, Mapping
-from sqlalchemy.orm import Session
+from typing import Type, TypeVar, Generic, Mapping
+from sqlalchemy import select, delete as sa_delete
+from sqlalchemy.sql import Delete, Select
 from app.models.base import Base
 
 
 # Указание типа данных как определяемого в конкретном сервисе
-T = TypeVar("T", bound=Base)
+T = TypeVar('T', bound=Base)
 
 class BaseService(Generic[T]):
     """
-    Абстрактный базовый класс для всех сервисов.
-    Содержит общие поля (модель и сессию, последнюю - если необходимо), методы в соответствие с CRUD.
+    BaseService — это абстрактный обобщенный (generic) класс,
+    реализующий паттерн Repository (с элементами Template Method) для работы с моделями SQLAlchemy.
+
+    Его главная архитектурная особенность — независимость от сессий базы данных (Sessionless).
+    Сервис отвечает исключительно за подготовку объектов, формирование SQL-запросов (Select, Delete) и валидацию данных.
+    Исполнение этих запросов (работа с БД) делегируется вышестоящему слою.
     """
 
-    def __init__(self, model: Type[T], db: Session | None = None) -> None:
+    def __init__(self, model: Type[T]) -> None:
         """
-        Конструктор для сервисов.
+        Конструктор сервиса. Привязывает сервис к конкретной модели БД и запускает внутреннюю генерацию документации.
         Args:
-            model: Класс модели SQLAlchemy (например, Group).
-            db: Дефолтная сессия SQLAlchemy (может быть None, если передается в методы).
+            model (Type[T]): Класс модели SQLAlchemy, с которой будет работать сервис.
+        Returns:
+            None
         """
         self.model = model
-        self.db = db
+        self._format_docs()
 
-    def _get_db(self, db: Session | None = None) -> Session:
+    # --- Вспомогательные функции класса ---
+
+    def _format_docs(self) -> None:
         """
-        Локальный метод. Определяет приоритетную сессию для выполнения операции.
-        Args:
-            db: Сессия, переданная напрямую в метод.
-
-        Returns:
-            Session: Активная сессия базы данных.
-
-        Raises:
-            ValueError: Если сессия не найдена ни в атрибутах класса, ни в аргументах.
+        Динамически заменяет плейсхолдер [T] в docstrings основных методов (create, get, update, delete)
+        на реальное имя модели (self.model.__name__). Это улучшает подсказки в IDE
+        при работе с конкретными сервисами-наследниками.
+        :return: None
         """
-        active_db = db or self.db
-        if active_db is None:
-            raise ValueError("Сессия не установлена ни в классе, ни в аргументе метода.")
-        return active_db
+        model_name = self.model.__name__
+        for method_name in ['create', 'get', 'update', 'delete']:
+            method = getattr(self, method_name)
+            if method.__doc__:
+                method.__func__.__doc__ = method.__doc__.replace("[T]", model_name)
 
-    def create(self, obj: T | Mapping[str, object], db: Session | None = None, autocommit: bool = False) -> T:
+    @staticmethod
+    def _get_data_map(obj: T | Mapping[str, object]) -> Mapping[str, object]:
         """
-        Создание записи в базе данных.
-        Args:
-            obj: Либо готовый экземпляр модели, либо словарь с данными для создания.
-            db: Опциональная сессия.
-            autocommit: Если True, выполняет commit() и refresh(), иначе — flush().
-
-        Returns:
-            T: Созданный экземпляр модели с присвоенным ID.
+        Универсальный нормализатор входных данных. Приводит переданный объект к типу словаря (Mapping)
+        для удобной валидации и передачи аргументов.
+        :param obj: Словарь с данными ИЛИ экземпляр модели [T] SQLAlchemy.
+        :return: Если передан словарь — возвращает его без изменений. Если передана модель [T] — извлекает её атрибуты
+        через __dict__, отфильтровывая служебные поля SQLAlchemy (начинающиеся с _).
         """
-        session = self._get_db(db)
-
         if isinstance(obj, Mapping):
-            db_obj = self.model(**obj)
-        else:
-            db_obj = obj
+            return obj
+        # Извлекаем данные из атрибутов модели, исключая служебные поля SQLAlchemy
+        return {k: v for k, v in obj.__dict__.items() if not k.startswith('_')}
 
-        session.add(db_obj)
-        if autocommit:
-            session.commit()
-            session.refresh(db_obj)
-        else:
-            session.flush()
+    # --- Хуки валидации ---
 
-        return db_obj
-
-    def get(self, db: Session | None = None, filters: Mapping[str, object] = None) -> T | List[T] | None:
+    def _verify_create(self, obj: Mapping[str, object]) -> bool:
         """
-        Получает данные из базы по заданным критериям.
-
-        Args:
-            db: Опциональная сессия.
-            filters: Словарь фильтров (например, {'name': 'Ivan'}). Если пустой — вернет все записи.
-
-        Returns:
-            Один объект (если поиск по id), список объектов или None.
+        Проверяет данные перед подготовкой объекта к созданию.
+        :param obj: Словарь с данными записи, которые мы хотим добавить в базу данных.
+        :return: True, если все данные корректны, False иначе.
         """
-        session = self._get_db(db)
+        return True
 
-        # Если фильтры не переданы, возвращаем все записи таблицы
-        if not filters:
-            return session.query(self.model).all()
-
-        # Если в фильтрах есть 'id' и это единственный параметр
-        if len(filters) == 1 and "id" in filters:
-            return session.get(self.model, filters["id"])
-
-        # В остальных случаях фильтруем по всем ключам из Mapping
-        return session.query(self.model).filter_by(**filters).all()
-
-    def update(self, db_obj: int | T, obj_in: Mapping[str, object], db: Session | None = None,
-               autocommit: bool = False) -> T | None:
+    def _verify_get(self, filters: Mapping[str, object]) -> bool:
         """
-        Обновляет запись в базе данных.
-        Args:
-            db_obj: ID записи или сам объект модели.
-            obj_in: Словарь с обновляемыми полями.
-            db: Опциональная сессия.
-            autocommit: Режим фиксации транзакции.
-
-        Returns:
-            Обновленный объект или None, если запись не найдена.
-
-        Raises:
-            AttributeError: Если передан ключ, которого нет в колонках таблицы.
+        Валидирует параметры фильтрации перед формированием запроса SELECT.
+        :param filters: Словарь с фильтрами, которые хотим проверять.
+        :return: True, если все данные корректны, False иначе.
         """
-        session = self._get_db(db)
+        return True
 
-        if isinstance(db_obj, int):
-            db_obj = session.get(self.model, db_obj)
+    def _verify_update(self, db_obj: Mapping[str, object], upd_obj: Mapping[str, object]) -> bool:
+        """
+        Проверяет возможность обновления записи.
+        :param db_obj: Словарь записи в базе данных.
+        :param upd_obj: Словарь с данными, которые хотим обновить в базе даных.
+        :return: True, если все данные корректны, False иначе.
+        """
+        return True
 
-        if not db_obj:
+    def _verify_delete(self, obj: Mapping[str, object]) -> bool:
+        """
+        Проверяет права или условия перед формированием запроса на удаление.
+        :param obj: Словарь с данными, которые хотим удалить.
+        :return: True, если все данные корректны, False иначе.
+        """
+        return True
+
+    # --- CRUD методы ---
+
+    def create(self, obj: T | Mapping[str, object]) -> T | None:
+        """
+        Подготавливает экземпляр [T] модели для последующего добавления в БД.
+        :param obj: Словарь с данными для создания записи ИЛИ уже готовый объект модели [T].
+        :return: Экземпляр модели [T], если данные корректные, None иначе.
+        """
+        verify_data = self._get_data_map(obj)
+
+        if not self._verify_create(verify_data):
             return None
 
-        # Проверяем все поля на наличие в бд
-        for field in obj_in:
-            if not hasattr(db_obj, field):
-                raise AttributeError(
-                    f"Ошибка валидации: Поле '{field}' отсутствует в модели {self.model.__name__}. "
-                    "Обновление прервано."
-                )
+        return self.model(**verify_data) if isinstance(obj, Mapping) else obj
 
-        # Обновление полей в бд
-        for field, value in obj_in.items():
-            setattr(db_obj, field, value)
 
-        if autocommit:
-            session.commit()
-            session.refresh(db_obj)
-        else:
-            session.flush()
+    def get(self, filters: Mapping[str, object] | None = None) -> Select | None:
+        """
+        Формирует объект SQL-запроса на выборку данных.
+        :param filters: (Опционально) Словарь пар "ключ-значение" для фильтрации через WHERE.
+        :return: SQL-запроса, если был передан корректный фильтр, None иначе.
+        """
+        if filters is not None:
+            if not self._verify_get(filters):
+                return None
 
+        stmt = select(self.model)
+
+        if filters:
+            stmt = stmt.filter_by(**filters)
+
+        return stmt
+
+    def update(self, db_obj: T, upd_obj: T | Mapping[str, object]) -> T | None:
+        """
+        Обновляет атрибуты существующего объекта в базе данных.
+        :param db_obj: Существующий объект модели из базы данных.
+        :param upd_obj: Словарь с новыми значениями атрибутов или экземпляр модели [T].
+        :return: Экземпляр модели [T], если данные корректные, None иначе.
+        """
+        data = self._get_data_map(upd_obj)
+        if not self._verify_update(self._get_data_map(db_obj), data):
+            return None
+
+        for key, value in data.items():
+            if hasattr(db_obj, key):
+                setattr(db_obj, key, value)
         return db_obj
 
-    def delete(self, db_obj: Mapping[str, object] | T | None = None, db: Session | None = None,
-               autocommit: bool = False) -> bool:
+    def delete(self, db_obj: Mapping[str, object] | T | None = None) -> T | Delete | None:
         """
-        Удаляет запись из базы данных.
-
-        Если передан словарь (Mapping), удаление произойдет только в том случае,
-        если найдена ровно ОДНА запись, соответствующая критериям.
-
-        Args:
-            db_obj: Экземпляр модели или словарь с фильтрами.
-            db: Опциональная сессия.
-            autocommit: Режим фиксации транзакции.
-
-        Returns:
-            bool: True если удаление успешно, False в остальных случаях.
+        Формирует объект SQL-запроса для удаления записи из базы данных.
+        :param db_obj: Экземпляр модели ИЛИ словарь с фильтрами. Если в базе данных существует несколько записей,
+            удовлетворяющих фильтру, то будут удалены все такие записи.
+        :return: Если было передано None или данные оказались некорректные, то вернет None.
+            Если был передан экземпляр класса, то метод его же и вернет.
+            Если был передан словарь, то метод вернет SQL-запроса на удаление.
         """
-        session = self._get_db(db)
-
-        # Если ничего не передали
+        # Если объект не передан вовсе
         if db_obj is None:
-            return False
+            return None
 
-        target_to_delete: T | None = None
+        verify_data = self._get_data_map(db_obj)
 
-        # Если передали словарь (Mapping)
+        # Проверка прав или условий удаления
+        if not self._verify_delete(verify_data):
+            return None
+
+        # Если передан словарь — строим SQL запрос удаления
         if isinstance(db_obj, Mapping):
-            # Получаем все записи, подходящие под фильтр
-            results = session.query(self.model).filter_by(**db_obj).all()
+            return sa_delete(self.model).filter_by(**db_obj)
 
-            # Проверяем количество найденных записей
-            if len(results) == 1:
-                target_to_delete = results[0]
-            else:
-                return False
-
-        # Если передали готовый объект модели
-        elif isinstance(db_obj, self.model):
-            target_to_delete = db_obj
-
-        # Если объект не найден или тип данных неверный
-        if target_to_delete is None:
-            return False
-
-        session.delete(target_to_delete)
-
-        if autocommit:
-            session.commit()
-        else:
-            session.flush()
-
-        return True
+        # Если передан объект — возвращаем его же
+        return db_obj
