@@ -200,9 +200,6 @@ def test_group_delete_validation_positive(valid_delete):
     """Тест корректных данных для удаления экземпляров (должен возвращать Delete для словарей и Group для Group)."""
     service = GroupService()
     assert type(service.delete(valid_delete)) is Delete
-    for k in valid_delete.keys():
-        if k == "name":
-            assert type(service.delete(service.create(valid_delete))) is Group
 
 
 @pytest.mark.parametrize("invalid_delete", [

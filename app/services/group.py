@@ -13,7 +13,6 @@ class GroupService(BaseService[Group]):
     Реализация сервиса.
     Сервис для управления группами.
     """
-
     DEPARTMENTS = {'ФН', 'Э', 'СМ', 'РЛ', 'ИУ', 'БМТ', 'МТ', 'АК', 'ПС'}
 
     def __init__(self) -> None:

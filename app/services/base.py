@@ -147,13 +147,12 @@ class BaseService(Generic[T]):
                 setattr(db_obj, key, value)
         return db_obj
 
-    def delete(self, db_obj: Mapping[str, object] | T | None = None) -> T | Delete | None:
+    def delete(self, db_obj: Mapping[str, object] | T | None = None) -> Delete | None:
         """
         Формирует объект SQL-запроса для удаления записи из базы данных.
         :param db_obj: Экземпляр модели ИЛИ словарь с фильтрами. Если в базе данных существует несколько записей,
             удовлетворяющих фильтру, то будут удалены все такие записи.
         :return: Если было передано None или данные оказались некорректные, то вернет None.
-            Если был передан экземпляр класса, то метод его же и вернет.
             Если был передан словарь, то метод вернет SQL-запроса на удаление.
         """
         # Если объект не передан вовсе
@@ -166,9 +165,5 @@ class BaseService(Generic[T]):
         if not self._verify_delete(verify_data):
             return None
 
-        # Если передан словарь — строим SQL запрос удаления
-        if isinstance(db_obj, Mapping):
-            return sa_delete(self.model).filter_by(**db_obj)
-
-        # Если передан объект — возвращаем его же
-        return db_obj
+        # Строим SQL запрос удаления
+        return sa_delete(self.model).filter_by(**verify_data)
