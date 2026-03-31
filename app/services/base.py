@@ -111,20 +111,23 @@ class BaseService(Generic[T]):
         return self.model(**verify_data) if isinstance(obj, Mapping) else obj
 
 
-    def get(self, filters: Mapping[str, object] | None = None) -> Select | None:
+    def get(self, filters: T | Mapping[str, object] | None = None) -> Select | None:
         """
         Формирует объект SQL-запроса на выборку данных.
-        :param filters: (Опционально) Словарь пар "ключ-значение" для фильтрации через WHERE.
+        :param filters: (Опционально) Словарь пар "ключ-значение" ИЛИ уже готовый объект модели [T]
+            для фильтрации через WHERE.
         :return: SQL-запроса, если был передан корректный фильтр, None иначе.
         """
+        verify_data = BaseService._get_data_map(filters)
+
         if filters is not None:
-            if not self._verify_get(filters):
+            if not self._verify_get(verify_data):
                 return None
 
         stmt = select(self.model)
 
         if filters:
-            stmt = stmt.filter_by(**filters)
+            stmt = stmt.filter_by(**verify_data)
 
         return stmt
 

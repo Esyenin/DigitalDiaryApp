@@ -4,7 +4,7 @@
 """
 from typing import Mapping
 import re
-from app.models.group import MAX_LEN, Group
+from app.models.group import MAX_LEN, Group, Base
 from app.services.base import BaseService
 
 
@@ -17,13 +17,10 @@ class GroupService(BaseService[Group]):
     DEPARTMENTS = {'ФН', 'Э', 'СМ', 'РЛ', 'ИУ', 'БМТ', 'МТ', 'АК', 'ПС'}
 
     def __init__(self) -> None:
-        """
-
-        """
         super().__init__(Group)
 
     @staticmethod
-    def _correct_type_data(obj: Mapping[str, object]) -> bool:
+    def _correct_type_data(obj: Mapping[str, object]) -> bool | str:
         """
         Базовая проверка типов данных для модели этого сервиса. Проверяет, что полученные данные соответствуют
         типу данных из колонок базы данных и другим ограничениям на запись.
@@ -37,22 +34,23 @@ class GroupService(BaseService[Group]):
         if obj_name is not None:
             if isinstance(obj_name, str):
                 if not 0 < len(obj_name) <= MAX_LEN["name"]:
-                    return False
+                    return f"Incorrect type data. Incorrect name \"{obj_name}\" length: {len(obj_name)}."
             else:
-                return False
+                return f"Incorrect type data. {obj_name} is {type(obj_name)}."
 
         # Проверка speciality
         if obj_speciality is not None:
             if isinstance(obj_speciality, str):
                 if not 0 < len(obj_speciality) <= MAX_LEN["speciality"]:
-                    return False
+                    return (f"Incorrect type data. Incorrect speciality \"{obj_speciality}\""
+                            f" length: {len(obj_speciality)}.")
             else:
-                return False
+                return f"Incorrect type data. {obj_speciality} is {type(obj_speciality)}."
 
         return True
 
     @staticmethod
-    def _correct_name(name: str) -> bool:
+    def _correct_name(name: str) -> bool | str:
         """
         Проверка правильности написания названия группы (Примеры: СМ1-21Б, ИУ7-33б БМТ2-11А).
         :param name: Название группы, которое хотим проверить.
@@ -63,18 +61,18 @@ class GroupService(BaseService[Group]):
         match = re.match(pattern, name)
 
         if not match:
-            return False
+            return f"Incorrect name. The name looks like {name}."
 
-        dept, fac_num, group_num, suffix = match.groups()
+        dept = match.groups()[0]
 
         # Дополнительная проверка на вхождение в список разрешенных кафедр
         if dept not in GroupService.DEPARTMENTS:
-            return False
+            return f"Incorrect name. There is no such faculty: {dept} for {name}."
 
         return True
 
     @staticmethod
-    def _correct_speciality(speciality: str) -> bool:
+    def _correct_speciality(speciality: str) -> bool | str:
         """
         Проверка правильности написания специальности группы (Пример: 11.11.11_специальность).
         :param speciality: Специальность группы, которую хотим проверить.
@@ -83,7 +81,9 @@ class GroupService(BaseService[Group]):
         pattern = r"^\d{2}\.\d{2}\.\d{2}_.+$"
         match = re.match(pattern, speciality)
 
-        return bool(match)
+        if match:
+            return True
+        return f"Incorrect entry of specialty. Specialty: {speciality}."
 
     @staticmethod
     def _template_verify(obj: Mapping[str, object]) -> bool:
@@ -93,17 +93,30 @@ class GroupService(BaseService[Group]):
         :param obj: Словарь с данными, которые хотим проверить.
         :return: True, если данные группы корректны, False иначе.
         """
+        # Ключи для Groups
+        for k in obj.keys():
+            if not (k in Base.__dict__.keys() or k in ("name", "speciality")):
+                print(f"Incorrect keys. Obj has incorrect key: {k} from {obj} for Group.")
+                return False
+
         # Правильный тип данных
-        if not GroupService._correct_type_data(obj):
+        ctd: bool | str = GroupService._correct_type_data(obj)
+        if isinstance(ctd, str):
+            print(ctd)
             return False
 
         # Правильная запись группы
-        if isinstance(obj.get("name"), str) and not GroupService._correct_name(obj.get("name")):
-            return False
+        if isinstance(obj.get("name"), str):
+            c_name = GroupService._correct_name(obj.get("name"))
+            if isinstance(c_name, str):
+                print(c_name)
 
         # Правильная запись специальности
-        if isinstance(obj.get("speciality"), str) and not GroupService._correct_speciality(obj.get("speciality")):
-            return False
+
+        if isinstance(obj.get("speciality"), str):
+            c_speciality: bool | str = GroupService._correct_speciality(obj.get("speciality"))
+            if isinstance(c_speciality, str):
+                print(c_speciality)
 
         return True
 
@@ -114,15 +127,54 @@ class GroupService(BaseService[Group]):
 
         # Имя обязательно
         if obj.get("name") is None:
+            print(f"Incorrect type data. The name is None for {obj}.")
             return False
 
         return True
 
     def _verify_get(self, filters: Mapping[str, object]) -> bool:
-        return GroupService._template_verify(filters)
+        # Базовая проверка
+        if not GroupService._template_verify(filters):
+            return False
+
+        # Если есть name, то оно не None
+        for k in filters.keys():
+            if k == "name" and filters.get(k) is None:
+                print(f"Incorrect type data. The name is None for {filters}.")
+                return False
+
+        return True
 
     def _verify_update(self, db_obj: Mapping[str, object], upd_obj: Mapping[str, object]) -> bool:
-        return GroupService._template_verify(upd_obj)
+        # Базовая проверка
+        if not GroupService._template_verify(upd_obj):
+            return False
+
+        # Если есть name, то оно не None
+        for k in upd_obj.keys():
+            if k == "name" and upd_obj.get(k) is None:
+                print(f"Incorrect type data. The name is None for {upd_obj}.")
+                return False
+
+        if len(upd_obj.keys()) == 0:
+            print(f"Incorrect type data. Keys not founded for {upd_obj}.")
+            return False
+
+        return True
 
     def _verify_delete(self, obj: Mapping[str, object]) -> bool:
-        return GroupService._template_verify(obj)
+        # Базовая проверка
+        if not GroupService._template_verify(obj):
+            return False
+
+        # Если есть name, то оно не None
+        for k in obj.keys():
+            if k == "name" and obj.get(k) is None:
+                print(f"Incorrect type data. The name is None for {obj}.")
+                return False
+
+        if len(obj.keys()) == 0:
+            print(f"Incorrect type data. Keys not founded for {obj}.")
+            return False
+
+        return True
