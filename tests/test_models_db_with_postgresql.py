@@ -4,61 +4,10 @@
 """
 # pylint: disable=redefined-outer-name, import-error
 from datetime import date, time
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
-import pytest
+from sqlalchemy import select
 
 # Импорты моделей и настроек проекта
-from app.models.base import Base
-from app.models.attendance import Attendance
-from app.models.comment import Comment
-from app.models.group import Group
-from app.models.lesson import Lesson
-from app.models.mark import Mark
-from app.models.schedule import Schedule
-from app.models.schedule_group_link import ScheduleGroupLink
-from app.models.student import Student
-from config import settings
-
-# Глобальный URL для подключения к тестовой БД
-DB_URL = settings.get_db_url()
-
-
-@pytest.fixture(scope="session")
-def engine():
-    """Создает движок SQLAlchemy для всей тестовой сессии."""
-
-    # Создание движка и генерация таблиц
-    engine = create_engine(DB_URL)
-    Base.metadata.create_all(bind=engine)
-    # Возврат функцией значения
-    yield engine
-
-
-@pytest.fixture(scope="function")
-def db_session(engine):
-    """
-    Создает изолированную сессию для каждого отдельного теста.
-    Использует транзакцию с откатом (rollback), чтобы база оставалась чистой.
-    """
-
-    # Подключение к базе данных
-    connection = engine.connect()
-    # Открытие транзакции
-    transaction = connection.begin()
-
-    # Открытие конкретной сессии
-    session = sessionmaker(bind=connection)()
-
-    # Возврат функцией значения
-    yield session
-
-    # Закрытие сессии
-    session.close()
-    # Откат транзакций
-    transaction.rollback()
-    # Закрытие подключения
-    connection.close()
+from app.models import Attendance, Comment, Group, Lesson, Mark, Schedule, ScheduleGroupLink, Student
 
 
 # --- ТЕСТЫ ---

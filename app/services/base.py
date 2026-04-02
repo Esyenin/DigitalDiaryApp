@@ -1,169 +1,283 @@
 """
-Сервис базовый для всех сервисов проекта.
+Модуль базового сервиса.
+
+Файл содержит класс BaseService.
+BaseService задает общий интерфейс и общее поведение сервисов,
+работающих с одной SQLAlchemy-моделью.
+
+Модуль определяет:
+- контракт базового сервиса;
+- правила нормализации входных данных;
+- правила валидации данных через Pydantic-схемы;
+- подготовку ORM-объектов;
+- построение SQLAlchemy-выражений Select и Delete;
+- применение изменений к существующему ORM-объекту.
 """
-from typing import Type, TypeVar, Generic, Mapping
-from sqlalchemy import select, delete as sa_delete
+from typing import Generic, Mapping, TypeVar
+
+from pydantic import BaseModel, ValidationError
+from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.sql import Delete, Select
+
 from app.models.base import Base
 
 
-# Указание типа данных как определяемого в конкретном сервисе
-T = TypeVar('T', bound=Base)
+ModelT = TypeVar("ModelT", bound=Base)
 
-class BaseService(Generic[T]):
+
+class BaseService(Generic[ModelT]):
     """
-    BaseService — это абстрактный обобщенный (generic) класс,
-    реализующий паттерн Repository (с элементами Template Method) для работы с моделями SQLAlchemy.
+    Базовый сервис для одной ORM-модели.
 
-    Его главная архитектурная особенность — независимость от сессий базы данных (Sessionless).
-    Сервис отвечает исключительно за подготовку объектов, формирование SQL-запросов (Select, Delete) и валидацию данных.
-    Исполнение этих запросов (работа с БД) делегируется вышестоящему слою.
+    Класс предназначен для наследования.
+    Наследник должен задать:
+    - `model` — ORM-модель сервиса;
+    - `create_schema` — схему валидации для `create_instance`;
+    - `select_schema` — схему валидации для `build_select`;
+    - `update_schema` — схему валидации для `apply_update`;
+    - `delete_schema` — схему валидации для `build_delete`;
+    - `schema_fields` — набор полей, извлекаемых из ORM-объекта.
+
+    Класс не выполняет SQL-запросы, не работает с сессией базы данных
+    и не управляет транзакциями.
     """
 
-    def __init__(self, model: Type[T]) -> None:
+    model: type[ModelT]
+    create_schema: type[BaseModel] | None = None
+    select_schema: type[BaseModel] | None = None
+    update_schema: type[BaseModel] | None = None
+    delete_schema: type[BaseModel] | None = None
+    schema_fields: frozenset[str] | None = None
+
+    def _extract_model_data(self, obj: ModelT) -> dict[str, object]:
         """
-        Конструктор сервиса. Привязывает сервис к конкретной модели БД и запускает внутреннюю генерацию документации.
+        Извлекает данные из ORM-объекта.
+
+        Метод читает атрибуты объекта из `__dict__`, исключает служебные поля
+        SQLAlchemy, начинающиеся с `_`, и при необходимости оставляет только
+        поля из `schema_fields`.
+
         Args:
-            model (Type[T]): Класс модели SQLAlchemy, с которой будет работать сервис.
+            obj: Экземпляр ORM-модели, связанной с сервисом.
+
         Returns:
-            None
+            dict[str, object]: Словарь с полями объекта.
         """
-        self.model = model
-        self._format_docs()
+        data = {
+            key: value
+            for key, value in obj.__dict__.items()
+            if not key.startswith("_")
+        }
 
-    # --- Вспомогательные функции класса ---
+        if self.schema_fields is None:
+            return data
 
-    def _format_docs(self) -> None:
-        """
-        Динамически заменяет плейсхолдер [T] в docstrings основных методов (create, get, update, delete)
-        на реальное имя модели (self.model.__name__). Это улучшает подсказки в IDE
-        при работе с конкретными сервисами-наследниками.
-        :return: None
-        """
-        model_name = self.model.__name__
-        for method_name in ['create', 'get', 'update', 'delete']:
-            method = getattr(self, method_name)
-            if method.__doc__:
-                method.__func__.__doc__ = method.__doc__.replace("[T]", model_name)
+        return {
+            key: value
+            for key, value in data.items()
+            if key in self.schema_fields
+        }
 
-    @staticmethod
-    def _get_data_map(obj: T | Mapping[str, object]) -> Mapping[str, object]:
+    def _extract_data(
+        self,
+        obj: BaseModel | ModelT | Mapping[str, object] | None,
+    ) -> dict[str, object] | None:
         """
-        Универсальный нормализатор входных данных. Приводит переданный объект к типу словаря (Mapping)
-        для удобной валидации и передачи аргументов.
-        :param obj: Словарь с данными ИЛИ экземпляр модели [T] SQLAlchemy.
-        :return: Если передан словарь — возвращает его без изменений. Если передана модель [T] — извлекает её атрибуты
-        через __dict__, отфильтровывая служебные поля SQLAlchemy (начинающиеся с _).
-        """
-        if isinstance(obj, Mapping):
-            return obj
-        # Извлекаем данные из атрибутов модели, исключая служебные поля SQLAlchemy
-        return {k: v for k, v in obj.__dict__.items() if not k.startswith('_')}
+        Приводит входные данные к словарю.
 
-    # --- Хуки валидации ---
+        Поддерживаемые типы входа:
+        - `None`;
+        - Mapping;
+        - экземпляр Pydantic-модели;
+        - экземпляр ORM-модели.
 
-    def _verify_create(self, obj: Mapping[str, object]) -> bool:
-        """
-        Проверяет данные перед подготовкой объекта к созданию.
-        :param obj: Словарь с данными записи, которые мы хотим добавить в базу данных.
-        :return: True, если все данные корректны, False иначе.
-        """
-        return True
+        Для Pydantic-модели используется `model_dump(exclude_unset=True)`.
+        Для ORM-модели используется `_extract_model_data`.
 
-    def _verify_get(self, filters: Mapping[str, object]) -> bool:
-        """
-        Валидирует параметры фильтрации перед формированием запроса SELECT.
-        :param filters: Словарь с фильтрами, которые хотим проверять.
-        :return: True, если все данные корректны, False иначе.
-        """
-        return True
+        Args:
+            obj: Данные для преобразования.
 
-    def _verify_update(self, db_obj: Mapping[str, object], upd_obj: Mapping[str, object]) -> bool:
+        Returns:
+            dict[str, object] | None: Словарь данных или `None`.
         """
-        Проверяет возможность обновления записи.
-        :param db_obj: Словарь записи в базе данных.
-        :param upd_obj: Словарь с данными, которые хотим обновить в базе даных.
-        :return: True, если все данные корректны, False иначе.
-        """
-        return True
-
-    def _verify_delete(self, obj: Mapping[str, object]) -> bool:
-        """
-        Проверяет права или условия перед формированием запроса на удаление.
-        :param obj: Словарь с данными, которые хотим удалить.
-        :return: True, если все данные корректны, False иначе.
-        """
-        return True
-
-    # --- CRUD методы ---
-
-    def create(self, obj: T | Mapping[str, object]) -> T | None:
-        """
-        Подготавливает экземпляр [T] модели для последующего добавления в БД.
-        :param obj: Словарь с данными для создания записи ИЛИ уже готовый объект модели [T].
-        :return: Экземпляр модели [T], если данные корректные, None иначе.
-        """
-        verify_data = self._get_data_map(obj)
-
-        if not self._verify_create(verify_data):
+        if obj is None:
             return None
 
-        return self.model(**verify_data) if isinstance(obj, Mapping) else obj
+        if isinstance(obj, BaseModel):
+            return obj.model_dump(exclude_unset=True)
 
+        if isinstance(obj, Mapping):
+            return dict(obj)
 
-    def get(self, filters: T | Mapping[str, object] | None = None) -> Select | None:
+        return self._extract_model_data(obj)
+
+    @staticmethod
+    def _validate(
+        schema_class: type[BaseModel] | None,
+        data: dict[str, object] | None,
+    ) -> BaseModel | dict[str, object] | None:
         """
-        Формирует объект SQL-запроса на выборку данных.
-        :param filters: (Опционально) Словарь пар "ключ-значение" ИЛИ уже готовый объект модели [T]
-            для фильтрации через WHERE.
-        :return: SQL-запроса, если был передан корректный фильтр, None иначе.
+        Валидирует словарь через переданную схему.
+
+        Если `schema_class` равен `None`, метод возвращает исходные данные.
+        Если валидация не пройдена, метод возвращает `None`.
+
+        Args:
+            schema_class: Класс Pydantic-схемы для проверки данных.
+            data: Словарь данных, который нужно провалидировать.
+
+        Returns:
+            BaseModel | dict[str, object] | None: Результат валидации
+            или `None`.
         """
-        verify_data = BaseService._get_data_map(filters)
+        if data is None:
+            return None
 
-        if filters is not None:
-            if not self._verify_get(verify_data):
-                return None
+        if schema_class is None:
+            return data
 
+        try:
+            return schema_class.model_validate(data)
+        except ValidationError:
+            return None
+
+    @staticmethod
+    def _dump_validated_data(
+        validated: BaseModel | dict[str, object],
+    ) -> dict[str, object]:
+        """
+        Преобразует результат валидации в словарь.
+
+        Если передан экземпляр Pydantic-модели, используется
+        `model_dump(exclude_unset=True)`.
+        Если передан словарь, он копируется в новый `dict`.
+
+        Args:
+            validated: Результат предыдущей валидации.
+
+        Returns:
+            dict[str, object]: Словарь данных.
+        """
+        if isinstance(validated, BaseModel):
+            return validated.model_dump(exclude_unset=True)
+
+        return dict(validated)
+
+    def create_instance(
+        self,
+        data: BaseModel | ModelT | Mapping[str, object],
+    ) -> ModelT | None:
+        """
+        Подготавливает ORM-объект для создания.
+
+        Метод:
+        1. преобразует входные данные в словарь;
+        2. валидирует их через `create_schema`;
+        3. возвращает экземпляр `self.model`.
+
+        Если на вход уже передан объект `self.model`, после успешной валидации
+        возвращается этот же объект.
+
+        Args:
+            data: Данные для создания объекта.
+
+        Returns:
+            ModelT | None: Экземпляр ORM-модели или `None`.
+        """
+        raw_data = self._extract_data(data)
+        validated = self._validate(self.create_schema, raw_data)
+        if validated is None:
+            return None
+
+        if isinstance(data, self.model):
+            return data
+
+        return self.model(**self._dump_validated_data(validated))
+
+    def build_select(
+        self,
+        filters: ModelT | Mapping[str, object] | BaseModel | None = None,
+    ) -> Select | None:
+        """
+        Строит Select-выражение для модели.
+
+        Если `filters` равен `None`, метод возвращает `select(self.model)`.
+        Если фильтры переданы, они валидируются через `select_schema`
+        и применяются к выражению через `filter_by`.
+
+        Args:
+            filters: Фильтры выборки.
+
+        Returns:
+            Select | None: SQLAlchemy Select или `None`.
+        """
         stmt = select(self.model)
+        if filters is None:
+            return stmt
 
-        if filters:
-            stmt = stmt.filter_by(**verify_data)
+        raw_data = self._extract_data(filters)
+        validated = self._validate(self.select_schema, raw_data)
+        if validated is None:
+            return None
+
+        filter_data = self._dump_validated_data(validated)
+        if filter_data:
+            stmt = stmt.filter_by(**filter_data)
 
         return stmt
 
-    def update(self, db_obj: T, upd_obj: T | Mapping[str, object]) -> T | None:
+    def apply_update(
+        self,
+        db_obj: ModelT,
+        data: ModelT | Mapping[str, object] | BaseModel,
+    ) -> ModelT | None:
         """
-        Обновляет атрибуты существующего объекта в базе данных.
-        :param db_obj: Существующий объект модели из базы данных.
-        :param upd_obj: Словарь с новыми значениями атрибутов или экземпляр модели [T].
-        :return: Экземпляр модели [T], если данные корректные, None иначе.
+        Применяет изменения к существующему ORM-объекту.
+
+        Метод проверяет тип `db_obj`, валидирует `data` через `update_schema`
+        и присваивает новые значения полям объекта через `setattr`.
+
+        Args:
+            db_obj: Объект модели, который нужно изменить.
+            data: Новые значения полей.
+
+        Returns:
+            ModelT | None: Обновленный объект или `None`.
         """
-        data = self._get_data_map(upd_obj)
-        if not self._verify_update(self._get_data_map(db_obj), data):
+        if not isinstance(db_obj, self.model):
             return None
 
-        for key, value in data.items():
-            if hasattr(db_obj, key):
-                setattr(db_obj, key, value)
+        raw_data = self._extract_data(data)
+        validated = self._validate(self.update_schema, raw_data)
+        if validated is None:
+            return None
+
+        for field_name, value in self._dump_validated_data(validated).items():
+            setattr(db_obj, field_name, value)
+
         return db_obj
 
-    def delete(self, db_obj: Mapping[str, object] | T | None = None) -> Delete | None:
+    def build_delete(
+        self,
+        filters: ModelT | Mapping[str, object] | BaseModel | None,
+    ) -> Delete | None:
         """
-        Формирует объект SQL-запроса для удаления записи из базы данных.
-        :param db_obj: Экземпляр модели ИЛИ словарь с фильтрами. Если в базе данных существует несколько записей,
-            удовлетворяющих фильтру, то будут удалены все такие записи.
-        :return: Если было передано None или данные оказались некорректные, то вернет None.
-            Если был передан словарь, то метод вернет SQL-запроса на удаление.
+        Строит Delete-выражение для модели.
+
+        Метод валидирует `filters` через `delete_schema`
+        и возвращает `delete(self.model).filter_by(...)`.
+
+        Args:
+            filters: Фильтры удаления.
+
+        Returns:
+            Delete | None: SQLAlchemy Delete или `None`.
         """
-        # Если объект не передан вовсе
-        if db_obj is None:
+        raw_data = self._extract_data(filters)
+        validated = self._validate(self.delete_schema, raw_data)
+        if validated is None:
             return None
 
-        verify_data = self._get_data_map(db_obj)
-
-        # Проверка прав или условий удаления
-        if not self._verify_delete(verify_data):
-            return None
-
-        # Строим SQL запрос удаления
-        return sa_delete(self.model).filter_by(**verify_data)
+        return sa_delete(self.model).filter_by(
+            **self._dump_validated_data(validated)
+        )
