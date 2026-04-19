@@ -4,14 +4,6 @@
 Файл содержит класс BaseService.
 BaseService задает общий интерфейс и общее поведение сервисов,
 работающих с одной SQLAlchemy-моделью.
-
-Модуль определяет:
-- контракт базового сервиса;
-- правила нормализации входных данных;
-- правила валидации данных через Pydantic-схемы;
-- подготовку ORM-объектов;
-- построение SQLAlchemy-выражений Select и Delete;
-- применение изменений к существующему ORM-объекту.
 """
 from typing import Generic, Mapping, TypeVar
 
@@ -29,14 +21,13 @@ class BaseService(Generic[ModelT]):
     """
     Базовый сервис для одной ORM-модели.
 
-    Класс предназначен для наследования.
-    Наследник должен задать:
-    - `model` — ORM-модель сервиса;
-    - `create_schema` — схему валидации для `create_instance`;
-    - `select_schema` — схему валидации для `build_select`;
-    - `update_schema` — схему валидации для `apply_update`;
-    - `delete_schema` — схему валидации для `build_delete`;
-    - `schema_fields` — набор полей, извлекаемых из ORM-объекта.
+    Наследник задает:
+    - `model` - ORM-модель сервиса;
+    - `create_schema` - схему валидации для создания;
+    - `select_schema` - схему валидации для выборки;
+    - `update_schema` - схему валидации для обновления;
+    - `delete_schema` - схему валидации для удаления;
+    - `schema_fields` - поля модели, разрешенные для извлечения из ORM-объекта.
 
     Класс не выполняет SQL-запросы, не работает с сессией базы данных
     и не управляет транзакциями.
@@ -52,16 +43,6 @@ class BaseService(Generic[ModelT]):
     def _extract_model_data(self, obj: ModelT) -> dict[str, object]:
         """
         Извлекает данные из ORM-объекта.
-
-        Метод читает атрибуты объекта из `__dict__`, исключает служебные поля
-        SQLAlchemy, начинающиеся с `_`, и при необходимости оставляет только
-        поля из `schema_fields`.
-
-        Args:
-            obj: Экземпляр ORM-модели, связанной с сервисом.
-
-        Returns:
-            dict[str, object]: Словарь с полями объекта.
         """
         data = {
             key: value
@@ -84,21 +65,6 @@ class BaseService(Generic[ModelT]):
     ) -> dict[str, object] | None:
         """
         Приводит входные данные к словарю.
-
-        Поддерживаемые типы входа:
-        - `None`;
-        - Mapping;
-        - экземпляр Pydantic-модели;
-        - экземпляр ORM-модели.
-
-        Для Pydantic-модели используется `model_dump(exclude_unset=True)`.
-        Для ORM-модели используется `_extract_model_data`.
-
-        Args:
-            obj: Данные для преобразования.
-
-        Returns:
-            dict[str, object] | None: Словарь данных или `None`.
         """
         if obj is None:
             return None
@@ -118,17 +84,6 @@ class BaseService(Generic[ModelT]):
     ) -> BaseModel | dict[str, object] | None:
         """
         Валидирует словарь через переданную схему.
-
-        Если `schema_class` равен `None`, метод возвращает исходные данные.
-        Если валидация не пройдена, метод возвращает `None`.
-
-        Args:
-            schema_class: Класс Pydantic-схемы для проверки данных.
-            data: Словарь данных, который нужно провалидировать.
-
-        Returns:
-            BaseModel | dict[str, object] | None: Результат валидации
-            или `None`.
         """
         if data is None:
             return None
@@ -147,16 +102,6 @@ class BaseService(Generic[ModelT]):
     ) -> dict[str, object]:
         """
         Преобразует результат валидации в словарь.
-
-        Если передан экземпляр Pydantic-модели, используется
-        `model_dump(exclude_unset=True)`.
-        Если передан словарь, он копируется в новый `dict`.
-
-        Args:
-            validated: Результат предыдущей валидации.
-
-        Returns:
-            dict[str, object]: Словарь данных.
         """
         if isinstance(validated, BaseModel):
             return validated.model_dump(exclude_unset=True)
@@ -169,20 +114,6 @@ class BaseService(Generic[ModelT]):
     ) -> ModelT | None:
         """
         Подготавливает ORM-объект для создания.
-
-        Метод:
-        1. преобразует входные данные в словарь;
-        2. валидирует их через `create_schema`;
-        3. возвращает экземпляр `self.model`.
-
-        Если на вход уже передан объект `self.model`, после успешной валидации
-        возвращается этот же объект.
-
-        Args:
-            data: Данные для создания объекта.
-
-        Returns:
-            ModelT | None: Экземпляр ORM-модели или `None`.
         """
         raw_data = self._extract_data(data)
         validated = self._validate(self.create_schema, raw_data)
@@ -200,16 +131,6 @@ class BaseService(Generic[ModelT]):
     ) -> Select | None:
         """
         Строит Select-выражение для модели.
-
-        Если `filters` равен `None`, метод возвращает `select(self.model)`.
-        Если фильтры переданы, они валидируются через `select_schema`
-        и применяются к выражению через `filter_by`.
-
-        Args:
-            filters: Фильтры выборки.
-
-        Returns:
-            Select | None: SQLAlchemy Select или `None`.
         """
         stmt = select(self.model)
         if filters is None:
@@ -233,16 +154,6 @@ class BaseService(Generic[ModelT]):
     ) -> ModelT | None:
         """
         Применяет изменения к существующему ORM-объекту.
-
-        Метод проверяет тип `db_obj`, валидирует `data` через `update_schema`
-        и присваивает новые значения полям объекта через `setattr`.
-
-        Args:
-            db_obj: Объект модели, который нужно изменить.
-            data: Новые значения полей.
-
-        Returns:
-            ModelT | None: Обновленный объект или `None`.
         """
         if not isinstance(db_obj, self.model):
             return None
@@ -263,15 +174,6 @@ class BaseService(Generic[ModelT]):
     ) -> Delete | None:
         """
         Строит Delete-выражение для модели.
-
-        Метод валидирует `filters` через `delete_schema`
-        и возвращает `delete(self.model).filter_by(...)`.
-
-        Args:
-            filters: Фильтры удаления.
-
-        Returns:
-            Delete | None: SQLAlchemy Delete или `None`.
         """
         raw_data = self._extract_data(filters)
         validated = self._validate(self.delete_schema, raw_data)
@@ -281,3 +183,29 @@ class BaseService(Generic[ModelT]):
         return sa_delete(self.model).filter_by(
             **self._dump_validated_data(validated)
         )
+
+    # Совместимость со старым API сервисов.
+    def create(
+        self,
+        data: BaseModel | ModelT | Mapping[str, object],
+    ) -> ModelT | None:
+        return self.create_instance(data)
+
+    def get(
+        self,
+        filters: ModelT | Mapping[str, object] | BaseModel | None = None,
+    ) -> Select | None:
+        return self.build_select(filters)
+
+    def update(
+        self,
+        db_obj: ModelT,
+        data: ModelT | Mapping[str, object] | BaseModel,
+    ) -> ModelT | None:
+        return self.apply_update(db_obj, data)
+
+    def delete(
+        self,
+        filters: ModelT | Mapping[str, object] | BaseModel | None,
+    ) -> Delete | None:
+        return self.build_delete(filters)

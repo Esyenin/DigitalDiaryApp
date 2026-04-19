@@ -1,13 +1,5 @@
 """
-Общие фикстуры тестов.
-
-Файл содержит общие настройки тестов базы данных:
-- подключение к тестовой БД;
-- создание SQLAlchemy engine;
-- создание тестовой сессии с откатом транзакции.
-
-Импорт `Base` из `app.models` загружает все модули моделей
-и регистрирует таблицы в `Base.metadata`.
+Общие фикстуры для тестов с PostgreSQL.
 """
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -23,7 +15,7 @@ DB_URL = settings.get_db_url()
 @pytest.fixture(scope="session")
 def engine():
     """
-    Создает SQLAlchemy engine для тестовой сессии.
+    Создает движок SQLAlchemy для всей тестовой сессии.
     """
     engine = create_engine(DB_URL)
     Base.metadata.create_all(bind=engine)
@@ -33,9 +25,7 @@ def engine():
 @pytest.fixture(scope="function")
 def db_session(engine):
     """
-    Создает изолированную сессию для одного теста.
-
-    После завершения теста транзакция откатывается.
+    Создает изолированную сессию для каждого отдельного теста.
     """
     connection = engine.connect()
     transaction = connection.begin()

@@ -1,13 +1,9 @@
 """
 Модуль базовых Pydantic-схем.
-
-Файл содержит общие схемы, используемые в остальных модулях пакета:
-- базовую схему проекта;
-- схему с полем идентификатора;
-- схему с временными метками;
-- базовую схему чтения данных из БД.
 """
+from collections.abc import Mapping
 from datetime import datetime
+from typing import Any, Iterable
 
 from pydantic import BaseModel, ConfigDict
 
@@ -15,9 +11,6 @@ from pydantic import BaseModel, ConfigDict
 class AppBaseSchema(BaseModel):
     """
     Базовая схема проекта.
-
-    Класс задает общую конфигурацию Pydantic-моделей.
-    От этого класса наследуются прикладные схемы проекта.
     """
 
     model_config = ConfigDict(
@@ -48,11 +41,36 @@ class TimestampSchema(AppBaseSchema):
 class BaseReadSchema(IdSchema, TimestampSchema):
     """
     Базовая схема чтения данных из БД.
-
-    Класс содержит поля:
-    - `id`;
-    - `created_at`;
-    - `updated_at`.
     """
 
-    pass
+
+def validate_not_empty_string(value: str | None) -> str | None:
+    """
+    Запрещает пустую строку в строковых полях схем.
+    """
+    if value == "":
+        raise ValueError("Пустая строка не допускается.")
+
+    return value
+
+
+def validate_non_empty_mapping(data: Any, message: str) -> Any:
+    """
+    Проверяет, что данные представлены непустым словарем.
+    """
+    if not isinstance(data, Mapping) or not data:
+        raise ValueError(message)
+
+    return data
+
+
+def validate_not_none_fields(
+    data: Mapping[str, object],
+    field_names: Iterable[str],
+) -> None:
+    """
+    Проверяет, что перечисленные поля, если переданы, не равны None.
+    """
+    for field_name in field_names:
+        if field_name in data and data[field_name] is None:
+            raise ValueError(f"Поле {field_name} не может быть None.")

@@ -1,12 +1,27 @@
 """
 Пакет схем проекта.
-
-Файл экспортирует базовые схемы и схемы сущности Group
-для использования в остальных модулях приложения.
 """
-
+from app.schemas.attendance import (
+    AttendanceBaseSchema,
+    AttendanceCreateSchema,
+    AttendanceDeleteSchema,
+    AttendanceFilterSchema,
+    AttendanceReadSchema,
+    AttendanceUpdateSchema,
+)
 from app.schemas.base import AppBaseSchema, BaseReadSchema, IdSchema, TimestampSchema
+from app.schemas.comment import (
+    CommentBaseSchema,
+    CommentCreateSchema,
+    CommentDeleteSchema,
+    CommentFilterSchema,
+    CommentReadSchema,
+    CommentUpdateSchema,
+)
 from app.schemas.group import (
+    DEPARTMENTS,
+    GROUP_NAME_PATTERN,
+    SPECIALITY_PATTERN,
     GroupBaseSchema,
     GroupCreateSchema,
     GroupDeleteSchema,
@@ -16,18 +31,103 @@ from app.schemas.group import (
     is_group_name_formatted,
     is_speciality_formatted,
 )
+from app.schemas.lesson import (
+    LessonBaseSchema,
+    LessonCreateSchema,
+    LessonDeleteSchema,
+    LessonFilterSchema,
+    LessonReadSchema,
+    LessonUpdateSchema,
+)
+from app.schemas.mark import (
+    MarkBaseSchema,
+    MarkCreateSchema,
+    MarkDeleteSchema,
+    MarkFilterSchema,
+    MarkReadSchema,
+    MarkUpdateSchema,
+)
+from app.schemas.schedule import (
+    ScheduleBaseSchema,
+    ScheduleCreateSchema,
+    ScheduleDeleteSchema,
+    ScheduleFilterSchema,
+    ScheduleReadSchema,
+    ScheduleUpdateSchema,
+)
+from app.schemas.schedule_group_link import (
+    ScheduleGroupLinkBaseSchema,
+    ScheduleGroupLinkCreateSchema,
+    ScheduleGroupLinkDeleteSchema,
+    ScheduleGroupLinkFilterSchema,
+    ScheduleGroupLinkReadSchema,
+    ScheduleGroupLinkUpdateSchema,
+)
+from app.schemas.student import (
+    StudentBaseSchema,
+    StudentCreateSchema,
+    StudentDeleteSchema,
+    StudentFilterSchema,
+    StudentReadSchema,
+    StudentUpdateSchema,
+)
 
 __all__ = [
     "AppBaseSchema",
     "IdSchema",
     "TimestampSchema",
     "BaseReadSchema",
+    "GROUP_NAME_PATTERN",
+    "SPECIALITY_PATTERN",
+    "DEPARTMENTS",
     "GroupBaseSchema",
     "GroupCreateSchema",
     "GroupUpdateSchema",
     "GroupFilterSchema",
     "GroupDeleteSchema",
     "GroupReadSchema",
+    "StudentBaseSchema",
+    "StudentCreateSchema",
+    "StudentUpdateSchema",
+    "StudentFilterSchema",
+    "StudentDeleteSchema",
+    "StudentReadSchema",
+    "ScheduleBaseSchema",
+    "ScheduleCreateSchema",
+    "ScheduleUpdateSchema",
+    "ScheduleFilterSchema",
+    "ScheduleDeleteSchema",
+    "ScheduleReadSchema",
+    "ScheduleGroupLinkBaseSchema",
+    "ScheduleGroupLinkCreateSchema",
+    "ScheduleGroupLinkUpdateSchema",
+    "ScheduleGroupLinkFilterSchema",
+    "ScheduleGroupLinkDeleteSchema",
+    "ScheduleGroupLinkReadSchema",
+    "LessonBaseSchema",
+    "LessonCreateSchema",
+    "LessonUpdateSchema",
+    "LessonFilterSchema",
+    "LessonDeleteSchema",
+    "LessonReadSchema",
+    "AttendanceBaseSchema",
+    "AttendanceCreateSchema",
+    "AttendanceUpdateSchema",
+    "AttendanceFilterSchema",
+    "AttendanceDeleteSchema",
+    "AttendanceReadSchema",
+    "MarkBaseSchema",
+    "MarkCreateSchema",
+    "MarkUpdateSchema",
+    "MarkFilterSchema",
+    "MarkDeleteSchema",
+    "MarkReadSchema",
+    "CommentBaseSchema",
+    "CommentCreateSchema",
+    "CommentUpdateSchema",
+    "CommentFilterSchema",
+    "CommentDeleteSchema",
+    "CommentReadSchema",
     "is_group_name_formatted",
     "is_speciality_formatted",
 ]

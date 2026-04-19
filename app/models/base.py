@@ -2,9 +2,31 @@
 Модель базовая для всех моделей проекта
 """
 from datetime import datetime
-import inflect
+
 from sqlalchemy import Integer, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
+
+try:
+    import inflect
+except ImportError:  # pragma: no cover - fallback нужен только без внешней зависимости
+    inflect = None
+
+
+def _pluralize_model_name(name: str) -> str:
+    """
+    Возвращает имя таблицы во множественном числе.
+
+    Если библиотека `inflect` доступна, используется она.
+    Иначе применяется простой fallback, которого достаточно
+    для текущих имен моделей проекта.
+    """
+    if inflect is not None:
+        return inflect.engine().plural(name)
+
+    if name.endswith("s"):
+        return name
+
+    return f"{name}s"
 
 
 class Base(DeclarativeBase):
@@ -28,7 +50,7 @@ class Base(DeclarativeBase):
         С учетом правильного образования слова.
         :returns Возвращает строку с названием.
         """
-        return inflect.engine().plural(self.__name__.lower())
+        return _pluralize_model_name(self.__name__.lower())
 
     def __repr__(self) -> str:
         """

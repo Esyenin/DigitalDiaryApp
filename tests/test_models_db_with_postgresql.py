@@ -5,6 +5,7 @@
 # pylint: disable=redefined-outer-name, import-error
 from datetime import date, time
 from sqlalchemy import select
+import pytest
 
 # Импорты моделей и настроек проекта
 from app.models import Attendance, Comment, Group, Lesson, Mark, Schedule, ScheduleGroupLink, Student
