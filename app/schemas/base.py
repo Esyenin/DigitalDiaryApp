@@ -44,7 +44,9 @@ class BaseReadSchema(IdSchema, TimestampSchema):
     """
 
 
-def validate_not_empty_string(value: str | None) -> str | None:
+def validate_not_empty_string(
+        value: str | None
+) -> str | None:
     """
     Запрещает пустую строку в строковых полях схем.
     """
@@ -54,7 +56,10 @@ def validate_not_empty_string(value: str | None) -> str | None:
     return value
 
 
-def validate_non_empty_mapping(data: Any, message: str) -> Any:
+def validate_non_empty_mapping(
+        data: Any,
+        message: str
+) -> Any:
     """
     Проверяет, что данные представлены непустым словарем.
     """

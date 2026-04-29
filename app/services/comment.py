@@ -22,3 +22,4 @@ class CommentService(BaseService[Comment]):
     update_schema = CommentUpdateSchema
     delete_schema = CommentDeleteSchema
     schema_fields = frozenset({"student_id", "lesson_id", "data"})
+    update_lookup_fields = frozenset({"id", "student_id", "lesson_id"})

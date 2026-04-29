@@ -22,3 +22,4 @@ class LessonService(BaseService[Lesson]):
     update_schema = LessonUpdateSchema
     delete_schema = LessonDeleteSchema
     schema_fields = frozenset({"schedule_id", "topic", "date"})
+    update_lookup_fields = frozenset({"id", "schedule_id", "date"})

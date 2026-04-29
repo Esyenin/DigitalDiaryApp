@@ -5,13 +5,38 @@ from typing import Any
 
 from pydantic import Field, field_validator, model_validator
 
-from app.schemas.base import (
-    AppBaseSchema,
-    BaseReadSchema,
-    validate_non_empty_mapping,
-    validate_not_empty_string,
-    validate_not_none_fields,
-)
+from app.models.comment import MAX_LEN
+from app.schemas.base import AppBaseSchema, BaseReadSchema, validate_not_empty_string
+
+
+def validate_comment_key(data: dict[str, object]) -> None:
+    """
+    Проверяет, что запись определена id или парой student_id + lesson_id.
+    """
+    has_id = "id" in data
+    has_student_id = "student_id" in data
+    has_lesson_id = "lesson_id" in data
+
+    if has_id:
+        return
+
+    if has_student_id and has_lesson_id:
+        return
+
+    raise ValueError("Нужно передать id или пару student_id и lesson_id.")
+
+
+def validate_comment_delete_filter(data: Any) -> Any:
+    """
+    Проверяет, что фильтр удаления содержит id, student_id или lesson_id.
+    """
+    if not isinstance(data, dict) or not data:
+        raise ValueError("Фильтр удаления не должен быть пустым.")
+
+    if not any(field_name in data for field_name in ("id", "student_id", "lesson_id")):
+        raise ValueError("Для удаления нужно передать id, student_id или lesson_id.")
+
+    return data
 
 
 class CommentBaseSchema(AppBaseSchema):
@@ -21,7 +46,7 @@ class CommentBaseSchema(AppBaseSchema):
 
     student_id: int | None = None
     lesson_id: int | None = None
-    data: str | None = Field(default=None, max_length=4096)
+    data: str | None = Field(default=None, max_length=MAX_LEN["data"])
 
     @field_validator("data")
     @classmethod
@@ -36,7 +61,7 @@ class CommentCreateSchema(CommentBaseSchema):
 
     student_id: int
     lesson_id: int
-    data: str = Field(..., min_length=1, max_length=4096)
+    data: str | None = Field(default=None, max_length=MAX_LEN["data"])
 
 
 class CommentFilterSchema(CommentBaseSchema):
@@ -44,21 +69,30 @@ class CommentFilterSchema(CommentBaseSchema):
     Схема для фильтрации комментариев.
     """
 
+    id: int = None
+    student_id: int = None
+    lesson_id: int = None
+    data: str = Field(default=None, max_length=MAX_LEN["data"])
+
 
 class CommentUpdateSchema(CommentBaseSchema):
     """
     Схема для обновления комментария.
     """
 
+    id: int = None
+    student_id: int = None
+    lesson_id: int = None
+    data: str = Field(..., min_length=1, max_length=MAX_LEN["data"])
+
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
-        validated = validate_non_empty_mapping(
-            data,
-            "Для обновления нужно передать хотя бы одно поле.",
-        )
-        validate_not_none_fields(validated, ("student_id", "lesson_id", "data"))
-        return validated
+        if not isinstance(data, dict):
+            raise ValueError("Данные обновления должны быть словарем.")
+
+        validate_comment_key(data)
+        return data
 
 
 class CommentDeleteSchema(CommentBaseSchema):
@@ -66,13 +100,15 @@ class CommentDeleteSchema(CommentBaseSchema):
     Схема для удаления комментариев по фильтру.
     """
 
+    id: int = None
+    student_id: int = None
+    lesson_id: int = None
+    data: str = Field(default=None, max_length=MAX_LEN["data"])
+
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
-        return validate_non_empty_mapping(
-            data,
-            "Фильтр удаления не должен быть пустым.",
-        )
+        return validate_comment_delete_filter(data)
 
 
 class CommentReadSchema(BaseReadSchema):
@@ -82,4 +118,4 @@ class CommentReadSchema(BaseReadSchema):
 
     student_id: int
     lesson_id: int
-    data: str
+    data: str | None = None

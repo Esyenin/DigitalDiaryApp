@@ -9,7 +9,6 @@ from app.schemas.base import (
     AppBaseSchema,
     BaseReadSchema,
     validate_non_empty_mapping,
-    validate_not_none_fields,
 )
 
 
@@ -18,8 +17,8 @@ class ScheduleGroupLinkBaseSchema(AppBaseSchema):
     Базовая схема связи расписания и группы.
     """
 
-    group_id: int | None = None
-    schedule_id: int | None = None
+    group_id: int = None
+    schedule_id: int = None
 
 
 class ScheduleGroupLinkCreateSchema(ScheduleGroupLinkBaseSchema):
@@ -36,6 +35,9 @@ class ScheduleGroupLinkFilterSchema(ScheduleGroupLinkBaseSchema):
     Схема для фильтрации связей.
     """
 
+    group_id: int = None
+    schedule_id: int = None
+
 
 class ScheduleGroupLinkUpdateSchema(ScheduleGroupLinkBaseSchema):
     """
@@ -45,18 +47,19 @@ class ScheduleGroupLinkUpdateSchema(ScheduleGroupLinkBaseSchema):
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
-        validated = validate_non_empty_mapping(
-            data,
-            "Для обновления нужно передать хотя бы одно поле.",
+        raise ValueError(
+            "Связь расписания и группы нельзя обновлять. "
+            "Удалите старую связь и создайте новую."
         )
-        validate_not_none_fields(validated, ("group_id", "schedule_id"))
-        return validated
 
 
 class ScheduleGroupLinkDeleteSchema(ScheduleGroupLinkBaseSchema):
     """
     Схема для удаления связи по фильтру.
     """
+
+    group_id: int = None
+    schedule_id: int = None
 
     @model_validator(mode="before")
     @classmethod

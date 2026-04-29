@@ -18,6 +18,7 @@ def engine():
     Создает движок SQLAlchemy для всей тестовой сессии.
     """
     engine = create_engine(DB_URL)
+    Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     yield engine
 
@@ -34,5 +35,6 @@ def db_session(engine):
     yield session
 
     session.close()
-    transaction.rollback()
+    if transaction.is_active:
+        transaction.rollback()
     connection.close()

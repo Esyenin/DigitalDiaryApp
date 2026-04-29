@@ -5,6 +5,7 @@
 # pylint: disable=redefined-outer-name, import-error
 from datetime import date, time
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 import pytest
 
 # Импорты моделей и настроек проекта
@@ -53,6 +54,23 @@ def test_create_group(db_session):
 
     # Вывод
     print(f" Удалось успешно создать группу:\n\t{db_group}")
+
+
+def test_group_name_must_be_unique(db_session):
+    """Проверка уникальности имени группы на уровне базы данных."""
+
+    first_group = Group(name="СМ1-21Б")
+    second_group = Group(name="СМ1-21Б")
+
+    db_session.add(first_group)
+    db_session.flush()
+
+    db_session.add(second_group)
+
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+    db_session.rollback()
 
 
 def test_create_student(db_session):
@@ -207,6 +225,40 @@ def test_create_schedule_group_link(db_session):
     print(f" Успешная связь Группы и Расписания:\n\t{db_link}")
 
 
+def test_schedule_group_link_must_be_unique(db_session):
+    """Проверка уникальности пары группа-расписание на уровне базы данных."""
+
+    my_group = Group(name="МТ10-12")
+    my_schedule = Schedule(
+        odd_or_even="even",
+        type="семинар",
+        day="ср",
+        time=time(hour=12, minute=0),
+    )
+
+    db_session.add_all([my_group, my_schedule])
+    db_session.flush()
+
+    first_link = ScheduleGroupLink(
+        group_id=my_group.id,
+        schedule_id=my_schedule.id,
+    )
+    second_link = ScheduleGroupLink(
+        group_id=my_group.id,
+        schedule_id=my_schedule.id,
+    )
+
+    db_session.add(first_link)
+    db_session.flush()
+
+    db_session.add(second_link)
+
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+    db_session.rollback()
+
+
 def test_create_lesson(db_session):
     """Проверка создания конкретного занятия."""
 
@@ -230,7 +282,7 @@ def test_create_lesson(db_session):
     my_lesson2 = Lesson(
         schedule_id=my_schedule.id,
         topic="Информатика",
-        date=date(2026, 4, 1),
+        date=date(2026, 4, 2),
     )
     db_session.add(my_lesson1)
     db_session.add(my_lesson2)
@@ -255,6 +307,51 @@ def test_create_lesson(db_session):
 
     # Вывод
     print(f" Успешно созданы занятие в календаре:\n\t{db_lesson1}\n\t{db_lesson2}")
+
+
+def test_lesson_schedule_date_must_be_unique(db_session):
+    """Проверка уникальности пары расписание-дата на уровне базы данных."""
+
+    my_schedule = Schedule(
+        odd_or_even="odd",
+        type="лекция",
+        day="ср",
+        time=time(hour=8, minute=30),
+    )
+    db_session.add(my_schedule)
+    db_session.flush()
+
+    first_lesson = Lesson(schedule_id=my_schedule.id, date=date(2026, 4, 1))
+    second_lesson = Lesson(schedule_id=my_schedule.id, date=date(2026, 4, 1))
+
+    db_session.add(first_lesson)
+    db_session.flush()
+
+    db_session.add(second_lesson)
+
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+    db_session.rollback()
+
+
+def _create_student_lesson_pair(db_session) -> tuple[Student, Lesson]:
+    """Создает студента и занятие для проверки student_id + lesson_id ключей."""
+
+    my_group = Group(name="ФН2-42")
+    my_student = Student(group=my_group, surname="Петров", first_name="Петр")
+    my_schedule = Schedule(
+        odd_or_even="odd",
+        type="семинар",
+        day="чт",
+        time=time(13, 50),
+    )
+    my_lesson = Lesson(schedule=my_schedule, date=date(2026, 3, 1))
+
+    db_session.add_all([my_group, my_student, my_schedule, my_lesson])
+    db_session.flush()
+
+    return my_student, my_lesson
 
 
 def test_create_attendance_mark_comments(db_session):
@@ -302,6 +399,60 @@ def test_create_attendance_mark_comments(db_session):
     # Вывод
     print(f" Успешно проставлены посещаемость, оценки и оставлен комментарий:"
           f"\n\t{db_attendance}\n\t{db_mark}\n\t{db_comment}")
+
+
+def test_attendance_student_lesson_must_be_unique(db_session):
+    """Проверка уникальности посещаемости для пары студент-занятие."""
+
+    my_student, my_lesson = _create_student_lesson_pair(db_session)
+    first_attendance = Attendance(student_id=my_student.id, lesson_id=my_lesson.id)
+    second_attendance = Attendance(student_id=my_student.id, lesson_id=my_lesson.id)
+
+    db_session.add(first_attendance)
+    db_session.flush()
+
+    db_session.add(second_attendance)
+
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+    db_session.rollback()
+
+
+def test_mark_student_lesson_must_be_unique(db_session):
+    """Проверка уникальности оценки для пары студент-занятие."""
+
+    my_student, my_lesson = _create_student_lesson_pair(db_session)
+    first_mark = Mark(student_id=my_student.id, lesson_id=my_lesson.id, data=5)
+    second_mark = Mark(student_id=my_student.id, lesson_id=my_lesson.id, data=4)
+
+    db_session.add(first_mark)
+    db_session.flush()
+
+    db_session.add(second_mark)
+
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+    db_session.rollback()
+
+
+def test_comment_student_lesson_must_be_unique(db_session):
+    """Проверка уникальности комментария для пары студент-занятие."""
+
+    my_student, my_lesson = _create_student_lesson_pair(db_session)
+    first_comment = Comment(student_id=my_student.id, lesson_id=my_lesson.id, data="Первый")
+    second_comment = Comment(student_id=my_student.id, lesson_id=my_lesson.id, data="Второй")
+
+    db_session.add(first_comment)
+    db_session.flush()
+
+    db_session.add(second_comment)
+
+    with pytest.raises(IntegrityError):
+        db_session.flush()
+
+    db_session.rollback()
 
 
 def test_simulate_db_app(db_session):

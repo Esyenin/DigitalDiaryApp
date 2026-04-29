@@ -4,6 +4,12 @@
 Файл содержит класс BaseService.
 BaseService задает общий интерфейс и общее поведение сервисов,
 работающих с одной SQLAlchemy-моделью.
+
+Публичный контракт класса состоит из методов:
+- `create_instance`;
+- `build_select`;
+- `apply_update`;
+- `build_delete`.
 """
 from typing import Generic, Mapping, TypeVar
 
@@ -23,10 +29,10 @@ class BaseService(Generic[ModelT]):
 
     Наследник задает:
     - `model` - ORM-модель сервиса;
-    - `create_schema` - схему валидации для создания;
-    - `select_schema` - схему валидации для выборки;
-    - `update_schema` - схему валидации для обновления;
-    - `delete_schema` - схему валидации для удаления;
+    - `create_schema` - схему валидации для `create_instance`;
+    - `select_schema` - схему валидации для `build_select`;
+    - `update_schema` - схему валидации для `apply_update`;
+    - `delete_schema` - схему валидации для `build_delete`;
     - `schema_fields` - поля модели, разрешенные для извлечения из ORM-объекта.
 
     Класс не выполняет SQL-запросы, не работает с сессией базы данных
@@ -39,8 +45,12 @@ class BaseService(Generic[ModelT]):
     update_schema: type[BaseModel] | None = None
     delete_schema: type[BaseModel] | None = None
     schema_fields: frozenset[str] | None = None
+    update_lookup_fields: frozenset[str] = frozenset({"id"})
 
-    def _extract_model_data(self, obj: ModelT) -> dict[str, object]:
+    def _extract_model_data(
+            self,
+            obj: ModelT
+    ) -> dict[str, object]:
         """
         Извлекает данные из ORM-объекта.
         """
@@ -164,6 +174,9 @@ class BaseService(Generic[ModelT]):
             return None
 
         for field_name, value in self._dump_validated_data(validated).items():
+            if field_name in self.update_lookup_fields:
+                continue
+
             setattr(db_obj, field_name, value)
 
         return db_obj
@@ -183,29 +196,3 @@ class BaseService(Generic[ModelT]):
         return sa_delete(self.model).filter_by(
             **self._dump_validated_data(validated)
         )
-
-    # Совместимость со старым API сервисов.
-    def create(
-        self,
-        data: BaseModel | ModelT | Mapping[str, object],
-    ) -> ModelT | None:
-        return self.create_instance(data)
-
-    def get(
-        self,
-        filters: ModelT | Mapping[str, object] | BaseModel | None = None,
-    ) -> Select | None:
-        return self.build_select(filters)
-
-    def update(
-        self,
-        db_obj: ModelT,
-        data: ModelT | Mapping[str, object] | BaseModel,
-    ) -> ModelT | None:
-        return self.apply_update(db_obj, data)
-
-    def delete(
-        self,
-        filters: ModelT | Mapping[str, object] | BaseModel | None,
-    ) -> Delete | None:
-        return self.build_delete(filters)

@@ -19,11 +19,16 @@ class Group(Base):
     """
 
     # Столбцы модели
-    name: Mapped[str] = mapped_column(String(MAX_LEN["name"]))
+    name: Mapped[str] = mapped_column(String(MAX_LEN["name"]), unique=True)
     speciality: Mapped[Optional[str]] = mapped_column(String(MAX_LEN["speciality"]))
 
     # Связи с занятиями в расписании (One-to-Many)
-    schedule_links: Mapped[List["ScheduleGroupLink"]] = relationship(back_populates="group",
-                                                                     cascade="all, delete-orphan")
+    schedule_links: Mapped[List["ScheduleGroupLink"]] = relationship(
+        back_populates="group",
+        cascade="all, delete-orphan",
+    )
     # Связи со студентами (One-to-Many)
-    students: Mapped[List["Student"]] = relationship(back_populates="group", cascade="all, delete-orphan")
+    students: Mapped[List["Student"]] = relationship(
+        back_populates="group",
+        cascade="all, delete-orphan",
+    )

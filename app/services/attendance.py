@@ -22,3 +22,4 @@ class AttendanceService(BaseService[Attendance]):
     update_schema = AttendanceUpdateSchema
     delete_schema = AttendanceDeleteSchema
     schema_fields = frozenset({"student_id", "lesson_id", "is_visited"})
+    update_lookup_fields = frozenset({"id", "student_id", "lesson_id"})

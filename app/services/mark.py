@@ -22,3 +22,4 @@ class MarkService(BaseService[Mark]):
     update_schema = MarkUpdateSchema
     delete_schema = MarkDeleteSchema
     schema_fields = frozenset({"student_id", "lesson_id", "data"})
+    update_lookup_fields = frozenset({"id", "student_id", "lesson_id"})

@@ -12,7 +12,6 @@ from app.schemas.base import (
     BaseReadSchema,
     validate_non_empty_mapping,
     validate_not_empty_string,
-    validate_not_none_fields,
 )
 
 
@@ -59,6 +58,7 @@ class GroupCreateSchema(GroupBaseSchema):
     """
 
     name: str = Field(..., min_length=1, max_length=MAX_LEN["name"])
+    speciality: str | None = Field(default=None, max_length=MAX_LEN["speciality"])
 
 
 class GroupFilterSchema(GroupBaseSchema):
@@ -66,11 +66,19 @@ class GroupFilterSchema(GroupBaseSchema):
     Схема для фильтрации групп.
     """
 
+    id: int = None
+    name: str = Field(default=None, max_length=MAX_LEN["name"])
+    speciality: str = Field(default=None, max_length=MAX_LEN["speciality"])
+
 
 class GroupUpdateSchema(GroupBaseSchema):
     """
     Схема для обновления группы.
     """
+
+    id: int = None
+    name: str = Field(default=None, max_length=MAX_LEN["name"])
+    speciality: str = Field(default=None, max_length=MAX_LEN["speciality"])
 
     @model_validator(mode="before")
     @classmethod
@@ -79,7 +87,15 @@ class GroupUpdateSchema(GroupBaseSchema):
             data,
             "Для обновления нужно передать хотя бы одно поле.",
         )
-        validate_not_none_fields(validated, ("name",))
+        if "id" in validated:
+            if len(validated) == 1:
+                raise ValueError("Для обновления нужно передать хотя бы одно изменяемое поле.")
+
+            return validated
+
+        if "name" not in validated or "speciality" not in validated:
+            raise ValueError("Если id не передан, нужно передать name и speciality.")
+
         return validated
 
 
@@ -88,13 +104,20 @@ class GroupDeleteSchema(GroupBaseSchema):
     Схема для удаления групп по фильтру.
     """
 
+    id: int = None
+    name: str = Field(default=None, max_length=MAX_LEN["name"])
+
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
-        return validate_non_empty_mapping(
+        validated = validate_non_empty_mapping(
             data,
             "Фильтр удаления не должен быть пустым.",
         )
+        if "id" not in validated and "name" not in validated:
+            raise ValueError("Для удаления нужно передать id или name.")
+
+        return validated
 
 
 class GroupReadSchema(BaseReadSchema):

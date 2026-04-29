@@ -19,9 +19,6 @@ from app.schemas.comment import (
     CommentUpdateSchema,
 )
 from app.schemas.group import (
-    DEPARTMENTS,
-    GROUP_NAME_PATTERN,
-    SPECIALITY_PATTERN,
     GroupBaseSchema,
     GroupCreateSchema,
     GroupDeleteSchema,
@@ -77,9 +74,6 @@ __all__ = [
     "IdSchema",
     "TimestampSchema",
     "BaseReadSchema",
-    "GROUP_NAME_PATTERN",
-    "SPECIALITY_PATTERN",
-    "DEPARTMENTS",
     "GroupBaseSchema",
     "GroupCreateSchema",
     "GroupUpdateSchema",
