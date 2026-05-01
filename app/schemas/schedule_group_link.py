@@ -1,6 +1,7 @@
 """
 Модуль схем для сущности ScheduleGroupLink.
 """
+from datetime import datetime
 from typing import Any
 
 from pydantic import model_validator
@@ -8,6 +9,7 @@ from pydantic import model_validator
 from app.schemas.base import (
     AppBaseSchema,
     BaseReadSchema,
+    strip_service_fields,
     validate_non_empty_mapping,
 )
 
@@ -17,8 +19,8 @@ class ScheduleGroupLinkBaseSchema(AppBaseSchema):
     Базовая схема связи расписания и группы.
     """
 
-    group_id: int = None
-    schedule_id: int = None
+    group_id: int | None = None
+    schedule_id: int | None = None
 
 
 class ScheduleGroupLinkCreateSchema(ScheduleGroupLinkBaseSchema):
@@ -29,14 +31,22 @@ class ScheduleGroupLinkCreateSchema(ScheduleGroupLinkBaseSchema):
     group_id: int
     schedule_id: int
 
+    @model_validator(mode="before")
+    @classmethod
+    def validate_raw_data(cls, data: Any) -> Any:
+        return strip_service_fields(data)
+
 
 class ScheduleGroupLinkFilterSchema(ScheduleGroupLinkBaseSchema):
     """
     Схема для фильтрации связей.
     """
 
-    group_id: int = None
-    schedule_id: int = None
+    id: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    group_id: int | None = None
+    schedule_id: int | None = None
 
 
 class ScheduleGroupLinkUpdateSchema(ScheduleGroupLinkBaseSchema):
@@ -58,8 +68,11 @@ class ScheduleGroupLinkDeleteSchema(ScheduleGroupLinkBaseSchema):
     Схема для удаления связи по фильтру.
     """
 
-    group_id: int = None
-    schedule_id: int = None
+    id: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    group_id: int | None = None
+    schedule_id: int | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -75,5 +88,4 @@ class ScheduleGroupLinkReadSchema(BaseReadSchema):
     Схема чтения данных связи.
     """
 
-    group_id: int
-    schedule_id: int
+    pass

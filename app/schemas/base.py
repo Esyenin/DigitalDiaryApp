@@ -44,6 +44,27 @@ class BaseReadSchema(IdSchema, TimestampSchema):
     """
 
 
+SERVICE_FIELD_NAMES = frozenset({"id", "created_at", "updated_at"})
+
+
+def strip_service_fields(
+    data: Any,
+    field_names: Iterable[str] = SERVICE_FIELD_NAMES,
+) -> Any:
+    """
+    Удаляет служебные поля из входных данных.
+    """
+    if not isinstance(data, Mapping):
+        return data
+
+    ignored_fields = frozenset(field_names)
+    return {
+        key: value
+        for key, value in data.items()
+        if key not in ignored_fields
+    }
+
+
 def validate_not_empty_string(
         value: str | None
 ) -> str | None:

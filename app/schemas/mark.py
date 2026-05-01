@@ -1,41 +1,17 @@
 """
 Модуль схем для сущности Mark.
 """
+from datetime import datetime
 from typing import Any
 
 from pydantic import model_validator
 
-from app.schemas.base import AppBaseSchema, BaseReadSchema
-
-
-def validate_mark_key(data: dict[str, object]) -> None:
-    """
-    Проверяет, что запись определена id или парой student_id + lesson_id.
-    """
-    has_id = "id" in data
-    has_student_id = "student_id" in data
-    has_lesson_id = "lesson_id" in data
-
-    if has_id:
-        return
-
-    if has_student_id and has_lesson_id:
-        return
-
-    raise ValueError("Нужно передать id или пару student_id и lesson_id.")
-
-
-def validate_mark_delete_filter(data: Any) -> Any:
-    """
-    Проверяет, что фильтр удаления содержит id, student_id или lesson_id.
-    """
-    if not isinstance(data, dict) or not data:
-        raise ValueError("Фильтр удаления не должен быть пустым.")
-
-    if not any(field_name in data for field_name in ("id", "student_id", "lesson_id")):
-        raise ValueError("Для удаления нужно передать id, student_id или lesson_id.")
-
-    return data
+from app.schemas.base import (
+    AppBaseSchema,
+    BaseReadSchema,
+    strip_service_fields,
+    validate_non_empty_mapping,
+)
 
 
 class MarkBaseSchema(AppBaseSchema):
@@ -57,36 +33,39 @@ class MarkCreateSchema(MarkBaseSchema):
     lesson_id: int
     data: int
 
+    @model_validator(mode="before")
+    @classmethod
+    def validate_raw_data(cls, data: Any) -> Any:
+        return strip_service_fields(data)
+
 
 class MarkFilterSchema(MarkBaseSchema):
     """
     Схема для фильтрации оценок.
     """
 
-    id: int = None
-    student_id: int = None
-    lesson_id: int = None
-    data: int = None
+    id: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    student_id: int | None = None
+    lesson_id: int | None = None
+    data: int | None = None
 
 
-class MarkUpdateSchema(MarkBaseSchema):
+class MarkUpdateSchema(AppBaseSchema):
     """
     Схема для обновления оценки.
     """
 
-    id: int = None
-    student_id: int = None
-    lesson_id: int = None
     data: int
 
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            raise ValueError("Данные обновления должны быть словарем.")
-
-        validate_mark_key(data)
-        return data
+        return validate_non_empty_mapping(
+            strip_service_fields(data),
+            "Для обновления нужно передать хотя бы одно поле.",
+        )
 
 
 class MarkDeleteSchema(MarkBaseSchema):
@@ -94,15 +73,20 @@ class MarkDeleteSchema(MarkBaseSchema):
     Схема для удаления оценок по фильтру.
     """
 
-    id: int = None
-    student_id: int = None
-    lesson_id: int = None
-    data: int = None
+    id: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    student_id: int | None = None
+    lesson_id: int | None = None
+    data: int | None = None
 
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
-        return validate_mark_delete_filter(data)
+        return validate_non_empty_mapping(
+            data,
+            "Фильтр удаления не должен быть пустым.",
+        )
 
 
 class MarkReadSchema(BaseReadSchema):
@@ -110,6 +94,4 @@ class MarkReadSchema(BaseReadSchema):
     Схема чтения данных оценки.
     """
 
-    student_id: int
-    lesson_id: int
-    data: int
+    pass

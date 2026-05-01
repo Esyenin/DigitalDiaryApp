@@ -2,6 +2,7 @@
 Модуль схем для сущности Lesson.
 """
 from datetime import date as date_type
+from datetime import datetime
 from typing import Any
 
 from pydantic import Field, field_validator, model_validator
@@ -10,38 +11,10 @@ from app.models.lesson import MAX_LEN
 from app.schemas.base import (
     AppBaseSchema,
     BaseReadSchema,
+    strip_service_fields,
+    validate_non_empty_mapping,
     validate_not_empty_string,
 )
-
-
-def validate_lesson_key(data: dict[str, object]) -> None:
-    """
-    Проверяет, что занятие определено id или парой schedule_id + date.
-    """
-    has_id = "id" in data
-    has_schedule_id = "schedule_id" in data
-    has_date = "date" in data
-
-    if has_id:
-        return
-
-    if has_schedule_id and has_date:
-        return
-
-    raise ValueError("Нужно передать id или пару schedule_id и date.")
-
-
-def validate_lesson_delete_filter(data: Any) -> Any:
-    """
-    Проверяет, что фильтр удаления содержит id или schedule_id.
-    """
-    if not isinstance(data, dict) or not data:
-        raise ValueError("Фильтр удаления не должен быть пустым.")
-
-    if "id" not in data and "schedule_id" not in data:
-        raise ValueError("Для удаления нужно передать id или schedule_id.")
-
-    return data
 
 
 class LessonBaseSchema(AppBaseSchema):
@@ -68,16 +41,23 @@ class LessonCreateSchema(LessonBaseSchema):
     topic: str | None = Field(default=None, max_length=MAX_LEN["topic"])
     date: date_type
 
+    @model_validator(mode="before")
+    @classmethod
+    def validate_raw_data(cls, data: Any) -> Any:
+        return strip_service_fields(data)
+
 
 class LessonFilterSchema(LessonBaseSchema):
     """
     Схема для фильтрации занятий.
     """
 
-    id: int = None
-    schedule_id: int = None
-    topic: str = Field(default=None, max_length=MAX_LEN["topic"])
-    date: date_type = None
+    id: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    schedule_id: int | None = None
+    topic: str | None = Field(default=None, max_length=MAX_LEN["topic"])
+    date: date_type | None = None
 
 
 class LessonUpdateSchema(LessonBaseSchema):
@@ -85,22 +65,17 @@ class LessonUpdateSchema(LessonBaseSchema):
     Схема для обновления занятия.
     """
 
-    id: int = None
-    schedule_id: int = None
-    topic: str | None = Field(..., max_length=MAX_LEN["topic"])
-    date: date_type = None
+    schedule_id: int | None = None
+    topic: str | None = Field(default=None, max_length=MAX_LEN["topic"])
+    date: date_type | None = None
 
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            raise ValueError("Данные обновления должны быть словарем.")
-
-        validate_lesson_key(data)
-        if "topic" not in data:
-            raise ValueError("Для обновления нужно передать topic.")
-
-        return data
+        return validate_non_empty_mapping(
+            strip_service_fields(data),
+            "Для обновления нужно передать хотя бы одно поле.",
+        )
 
 
 class LessonDeleteSchema(LessonBaseSchema):
@@ -108,15 +83,20 @@ class LessonDeleteSchema(LessonBaseSchema):
     Схема для удаления занятий по фильтру.
     """
 
-    id: int = None
-    schedule_id: int = None
-    topic: str = Field(default=None, max_length=MAX_LEN["topic"])
-    date: date_type = None
+    id: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    schedule_id: int | None = None
+    topic: str | None = Field(default=None, max_length=MAX_LEN["topic"])
+    date: date_type | None = None
 
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
-        return validate_lesson_delete_filter(data)
+        return validate_non_empty_mapping(
+            data,
+            "Фильтр удаления не должен быть пустым.",
+        )
 
 
 class LessonReadSchema(BaseReadSchema):
@@ -124,6 +104,4 @@ class LessonReadSchema(BaseReadSchema):
     Схема чтения данных занятия.
     """
 
-    schedule_id: int
-    topic: str | None = None
-    date: date_type
+    pass

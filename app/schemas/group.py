@@ -2,6 +2,7 @@
 Модуль схем для сущности Group.
 """
 import re
+from datetime import datetime
 from typing import Any
 
 from pydantic import Field, field_validator, model_validator
@@ -10,8 +11,10 @@ from app.models.group import MAX_LEN
 from app.schemas.base import (
     AppBaseSchema,
     BaseReadSchema,
+    strip_service_fields,
     validate_non_empty_mapping,
     validate_not_empty_string,
+    validate_not_none_fields,
 )
 
 
@@ -60,15 +63,30 @@ class GroupCreateSchema(GroupBaseSchema):
     name: str = Field(..., min_length=1, max_length=MAX_LEN["name"])
     speciality: str | None = Field(default=None, max_length=MAX_LEN["speciality"])
 
+    @model_validator(mode="before")
+    @classmethod
+    def validate_raw_data(cls, data: Any) -> Any:
+        return strip_service_fields(data)
+
 
 class GroupFilterSchema(GroupBaseSchema):
     """
     Схема для фильтрации групп.
     """
 
-    id: int = None
-    name: str = Field(default=None, max_length=MAX_LEN["name"])
-    speciality: str = Field(default=None, max_length=MAX_LEN["speciality"])
+    id: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    name: str | None = Field(default=None, max_length=MAX_LEN["name"])
+    speciality: str | None = Field(default=None, max_length=MAX_LEN["speciality"])
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_raw_data(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            validate_not_none_fields(data, ("id", "name"))
+
+        return data
 
 
 class GroupUpdateSchema(GroupBaseSchema):
@@ -76,26 +94,18 @@ class GroupUpdateSchema(GroupBaseSchema):
     Схема для обновления группы.
     """
 
-    id: int = None
-    name: str = Field(default=None, max_length=MAX_LEN["name"])
-    speciality: str = Field(default=None, max_length=MAX_LEN["speciality"])
+    name: str | None = Field(default=None, max_length=MAX_LEN["name"])
+    speciality: str | None = Field(default=None, max_length=MAX_LEN["speciality"])
 
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
+        cleaned = strip_service_fields(data)
         validated = validate_non_empty_mapping(
-            data,
+            cleaned,
             "Для обновления нужно передать хотя бы одно поле.",
         )
-        if "id" in validated:
-            if len(validated) == 1:
-                raise ValueError("Для обновления нужно передать хотя бы одно изменяемое поле.")
-
-            return validated
-
-        if "name" not in validated or "speciality" not in validated:
-            raise ValueError("Если id не передан, нужно передать name и speciality.")
-
+        validate_not_none_fields(validated, ("name",))
         return validated
 
 
@@ -104,8 +114,11 @@ class GroupDeleteSchema(GroupBaseSchema):
     Схема для удаления групп по фильтру.
     """
 
-    id: int = None
-    name: str = Field(default=None, max_length=MAX_LEN["name"])
+    id: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    name: str | None = Field(default=None, max_length=MAX_LEN["name"])
+    speciality: str | None = Field(default=None, max_length=MAX_LEN["speciality"])
 
     @model_validator(mode="before")
     @classmethod
@@ -114,16 +127,13 @@ class GroupDeleteSchema(GroupBaseSchema):
             data,
             "Фильтр удаления не должен быть пустым.",
         )
-        if "id" not in validated and "name" not in validated:
-            raise ValueError("Для удаления нужно передать id или name.")
-
+        validate_not_none_fields(validated, ("id", "name"))
         return validated
 
 
 class GroupReadSchema(BaseReadSchema):
     """
-    Схема чтения данных группы.
+    Заглушка для схемы чтения группы.
     """
 
-    name: str
-    speciality: str | None = None
+    pass
