@@ -19,6 +19,7 @@ def test_postgresql_connection(db_session):
     """Проверка физической записи и генерации ID в Postgres."""
 
     # Подготовка данных
+    initial_group_count = db_session.query(Group).count()
     group = Group(name="СМ1-11Б")
     db_session.add(group)
     db_session.flush()
@@ -26,7 +27,7 @@ def test_postgresql_connection(db_session):
     # Проверка
     assert group.id is not None
     assert group.name is not None
-    assert db_session.query(Group).count() == 1
+    assert db_session.query(Group).count() == initial_group_count + 1
 
     # Вывод
     print(" Соединение с базой данных успешно установлено")

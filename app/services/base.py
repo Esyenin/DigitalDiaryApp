@@ -1,16 +1,17 @@
 """
-РњРѕРґСѓР»СЊ Р±Р°Р·РѕРІРѕРіРѕ СЃРµСЂРІРёСЃР°.
+Модуль базового сервиса.
 
-Р¤Р°Р№Р» СЃРѕРґРµСЂР¶РёС‚ РєР»Р°СЃСЃ BaseService.
-BaseService Р·Р°РґР°РµС‚ РѕР±С‰РёР№ РёРЅС‚РµСЂС„РµР№СЃ Рё РѕР±С‰РµРµ РїРѕРІРµРґРµРЅРёРµ СЃРµСЂРІРёСЃРѕРІ,
-СЂР°Р±РѕС‚Р°СЋС‰РёС… СЃ РѕРґРЅРѕР№ SQLAlchemy-РјРѕРґРµР»СЊСЋ.
+Файл содержит класс BaseService.
+BaseService задает общий интерфейс и общее поведение сервисов,
+работающих с одной SQLAlchemy-моделью.
 
-РџСѓР±Р»РёС‡РЅС‹Р№ РєРѕРЅС‚СЂР°РєС‚ РєР»Р°СЃСЃР° СЃРѕСЃС‚РѕРёС‚ РёР· РјРµС‚РѕРґРѕРІ:
+Публичный контракт класса состоит из методов:
 - `create_instance`;
 - `build_select`;
 - `apply_update`;
 - `build_delete`.
 """
+import logging
 from typing import Generic, Mapping, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -21,22 +22,23 @@ from app.models.base import Base
 
 
 ModelT = TypeVar("ModelT", bound=Base)
+logger = logging.getLogger(__name__)
 
 
 class BaseService(Generic[ModelT]):
     """
-    Р‘Р°Р·РѕРІС‹Р№ СЃРµСЂРІРёСЃ РґР»СЏ РѕРґРЅРѕР№ ORM-РјРѕРґРµР»Рё.
+    Базовый сервис для одной ORM-модели.
 
-    РќР°СЃР»РµРґРЅРёРє Р·Р°РґР°РµС‚:
-    - `model` - ORM-РјРѕРґРµР»СЊ СЃРµСЂРІРёСЃР°;
-    - `create_schema` - СЃС…РµРјСѓ РІР°Р»РёРґР°С†РёРё РґР»СЏ `create_instance`;
-    - `select_schema` - СЃС…РµРјСѓ РІР°Р»РёРґР°С†РёРё РґР»СЏ `build_select`;
-    - `update_schema` - СЃС…РµРјСѓ РІР°Р»РёРґР°С†РёРё РґР»СЏ `apply_update`;
-    - `delete_schema` - СЃС…РµРјСѓ РІР°Р»РёРґР°С†РёРё РґР»СЏ `build_delete`;
-    - `schema_fields` - РїРѕР»СЏ РјРѕРґРµР»Рё, СЂР°Р·СЂРµС€РµРЅРЅС‹Рµ РґР»СЏ РёР·РІР»РµС‡РµРЅРёСЏ РёР· ORM-РѕР±СЉРµРєС‚Р°.
+    Наследник задает:
+    - `model` - ORM-модель сервиса;
+    - `create_schema` - схему валидации для `create_instance`;
+    - `select_schema` - схему валидации для `build_select`;
+    - `update_schema` - схему валидации для `apply_update`;
+    - `delete_schema` - схему валидации для `build_delete`;
+    - `schema_fields` - поля модели, разрешенные для извлечения из ORM-объекта.
 
-    РљР»Р°СЃСЃ РЅРµ РІС‹РїРѕР»РЅСЏРµС‚ SQL-Р·Р°РїСЂРѕСЃС‹, РЅРµ СЂР°Р±РѕС‚Р°РµС‚ СЃ СЃРµСЃСЃРёРµР№ Р±Р°Р·С‹ РґР°РЅРЅС‹С…
-    Рё РЅРµ СѓРїСЂР°РІР»СЏРµС‚ С‚СЂР°РЅР·Р°РєС†РёСЏРјРё.
+    Класс не выполняет SQL-запросы, не работает с сессией базы данных
+    и не управляет транзакциями.
     """
 
     model: type[ModelT]
@@ -48,11 +50,11 @@ class BaseService(Generic[ModelT]):
     update_lookup_fields: frozenset[str] = frozenset({"id"})
 
     def _extract_model_data(
-            self,
-            obj: ModelT
+        self,
+        obj: ModelT,
     ) -> dict[str, object]:
         """
-        РР·РІР»РµРєР°РµС‚ РґР°РЅРЅС‹Рµ РёР· ORM-РѕР±СЉРµРєС‚Р°.
+        Извлекает данные из ORM-объекта.
         """
         data = {
             key: value
@@ -74,7 +76,7 @@ class BaseService(Generic[ModelT]):
         obj: BaseModel | ModelT | Mapping[str, object] | None,
     ) -> dict[str, object] | None:
         """
-        РџСЂРёРІРѕРґРёС‚ РІС…РѕРґРЅС‹Рµ РґР°РЅРЅС‹Рµ Рє СЃР»РѕРІР°СЂСЋ.
+        Приводит входные данные к словарю.
         """
         if obj is None:
             return None
@@ -93,7 +95,7 @@ class BaseService(Generic[ModelT]):
         data: dict[str, object] | None,
     ) -> BaseModel | dict[str, object] | None:
         """
-        Р’Р°Р»РёРґРёСЂСѓРµС‚ СЃР»РѕРІР°СЂСЊ С‡РµСЂРµР· РїРµСЂРµРґР°РЅРЅСѓСЋ СЃС…РµРјСѓ.
+        Валидирует словарь через переданную схему.
         """
         if data is None:
             return None
@@ -104,6 +106,11 @@ class BaseService(Generic[ModelT]):
         try:
             return schema_class.model_validate(data)
         except ValidationError:
+            logger.warning(
+                "Validation failed for %s.",
+                schema_class.__name__,
+                exc_info=True,
+            )
             return None
 
     @staticmethod
@@ -111,7 +118,7 @@ class BaseService(Generic[ModelT]):
         validated: BaseModel | dict[str, object],
     ) -> dict[str, object]:
         """
-        РџСЂРµРѕР±СЂР°Р·СѓРµС‚ СЂРµР·СѓР»СЊС‚Р°С‚ РІР°Р»РёРґР°С†РёРё РІ СЃР»РѕРІР°СЂСЊ.
+        Преобразует результат валидации в словарь.
         """
         if isinstance(validated, BaseModel):
             return validated.model_dump(exclude_unset=True)
@@ -123,7 +130,7 @@ class BaseService(Generic[ModelT]):
         data: BaseModel | ModelT | Mapping[str, object],
     ) -> ModelT | None:
         """
-        РџРѕРґРіРѕС‚Р°РІР»РёРІР°РµС‚ ORM-РѕР±СЉРµРєС‚ РґР»СЏ СЃРѕР·РґР°РЅРёСЏ.
+        Подготавливает ORM-объект для создания.
         """
         raw_data = self._extract_data(data)
         validated = self._validate(self.create_schema, raw_data)
@@ -140,7 +147,7 @@ class BaseService(Generic[ModelT]):
         filters: ModelT | Mapping[str, object] | BaseModel | None = None,
     ) -> Select | None:
         """
-        РЎС‚СЂРѕРёС‚ Select-РІС‹СЂР°Р¶РµРЅРёРµ РґР»СЏ РјРѕРґРµР»Рё.
+        Строит Select-выражение для модели.
         """
         stmt = select(self.model)
         if filters is None:
@@ -163,7 +170,7 @@ class BaseService(Generic[ModelT]):
         data: ModelT | Mapping[str, object] | BaseModel,
     ) -> ModelT | None:
         """
-        РџСЂРёРјРµРЅСЏРµС‚ РёР·РјРµРЅРµРЅРёСЏ Рє СЃСѓС‰РµСЃС‚РІСѓСЋС‰РµРјСѓ ORM-РѕР±СЉРµРєС‚Сѓ.
+        Применяет изменения к существующему ORM-объекту.
         """
         if not isinstance(db_obj, self.model):
             return None
@@ -176,7 +183,6 @@ class BaseService(Generic[ModelT]):
         for field_name, value in self._dump_validated_data(validated).items():
             if field_name in self.update_lookup_fields:
                 continue
-
             setattr(db_obj, field_name, value)
 
         return db_obj
@@ -186,7 +192,7 @@ class BaseService(Generic[ModelT]):
         filters: ModelT | Mapping[str, object] | BaseModel | None,
     ) -> Delete | None:
         """
-        РЎС‚СЂРѕРёС‚ Delete-РІС‹СЂР°Р¶РµРЅРёРµ РґР»СЏ РјРѕРґРµР»Рё.
+        Строит Delete-выражение для модели.
         """
         raw_data = self._extract_data(filters)
         validated = self._validate(self.delete_schema, raw_data)
@@ -196,3 +202,41 @@ class BaseService(Generic[ModelT]):
         return sa_delete(self.model).filter_by(
             **self._dump_validated_data(validated)
         )
+
+    # Совместимость со старым API сервисов.
+    def create(
+        self,
+        data: BaseModel | ModelT | Mapping[str, object],
+    ) -> ModelT | None:
+        """
+        Совместимый alias для create_instance.
+        """
+        return self.create_instance(data)
+
+    def get(
+        self,
+        filters: ModelT | Mapping[str, object] | BaseModel | None = None,
+    ) -> Select | None:
+        """
+        Совместимый alias для build_select.
+        """
+        return self.build_select(filters)
+
+    def update(
+        self,
+        db_obj: ModelT,
+        data: ModelT | Mapping[str, object] | BaseModel,
+    ) -> ModelT | None:
+        """
+        Совместимый alias для apply_update.
+        """
+        return self.apply_update(db_obj, data)
+
+    def delete(
+        self,
+        filters: ModelT | Mapping[str, object] | BaseModel | None,
+    ) -> Delete | None:
+        """
+        Совместимый alias для build_delete.
+        """
+        return self.build_delete(filters)

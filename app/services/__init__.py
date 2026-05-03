@@ -7,12 +7,14 @@ from app.services.comment import CommentService
 from app.services.group import GroupService
 from app.services.lesson import LessonService
 from app.services.mark import MarkService
+from app.services.ormservice import OrmService
 from app.services.schedule import ScheduleService
 from app.services.schedule_group_links import ScheduleGroupLinkService
 from app.services.student import StudentService
 
 __all__ = [
     "BaseService",
+    "OrmService",
     "GroupService",
     "StudentService",
     "ScheduleService",
