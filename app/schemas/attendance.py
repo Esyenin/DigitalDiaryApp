@@ -1,5 +1,5 @@
 """
-Модуль схем для сущности Attendance.
+Схемы Pydantic для сущности посещаемости.
 """
 from datetime import datetime
 from typing import Any
@@ -17,6 +17,8 @@ from app.schemas.base import (
 class AttendanceBaseSchema(AppBaseSchema):
     """
     Базовая схема посещаемости.
+
+    Описывает поля записи, связывающей студента с конкретным занятием.
     """
 
     student_id: int | None = None
@@ -26,7 +28,7 @@ class AttendanceBaseSchema(AppBaseSchema):
 
 class AttendanceCreateSchema(AttendanceBaseSchema):
     """
-    Схема для создания посещаемости.
+    Схема для создания записи посещаемости.
     """
 
     student_id: int
@@ -36,12 +38,18 @@ class AttendanceCreateSchema(AttendanceBaseSchema):
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
+        """
+        Убирает из входных данных служебные поля перед созданием записи.
+
+        :param data: Невалидированные входные данные.
+        :return: Данные без служебных полей.
+        """
         return strip_service_fields(data)
 
 
 class AttendanceFilterSchema(AttendanceBaseSchema):
     """
-    Схема для фильтрации посещаемости.
+    Схема фильтрации записей посещаемости.
     """
 
     id: int | None = None
@@ -55,6 +63,9 @@ class AttendanceFilterSchema(AttendanceBaseSchema):
 class AttendanceUpdateSchema(AppBaseSchema):
     """
     Схема для обновления посещаемости.
+
+    Разрешает менять только значение факта посещения. Привязка к студенту и
+    занятию определяется не этой схемой, а фильтром или объектом записи.
     """
 
     is_visited: bool
@@ -62,6 +73,13 @@ class AttendanceUpdateSchema(AppBaseSchema):
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
+        """
+        Проверяет, что в обновление передан непустой набор полей.
+
+        :param data: Невалидированные входные данные.
+        :return: Очищенный словарь обновляемых полей.
+        :raises ValueError: Если обновлять нечего.
+        """
         return validate_non_empty_mapping(
             strip_service_fields(data),
             "Для обновления нужно передать хотя бы одно поле.",
@@ -70,7 +88,7 @@ class AttendanceUpdateSchema(AppBaseSchema):
 
 class AttendanceDeleteSchema(AttendanceBaseSchema):
     """
-    Схема для удаления посещаемости по фильтру.
+    Схема фильтра для удаления записей посещаемости.
     """
 
     id: int | None = None
@@ -83,6 +101,13 @@ class AttendanceDeleteSchema(AttendanceBaseSchema):
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
+        """
+        Проверяет, что удаление выполняется по непустому фильтру.
+
+        :param data: Невалидированные входные данные.
+        :return: Проверенный фильтр удаления.
+        :raises ValueError: Если фильтр удаления пустой.
+        """
         return validate_non_empty_mapping(
             data,
             "Фильтр удаления не должен быть пустым.",
@@ -91,7 +116,7 @@ class AttendanceDeleteSchema(AttendanceBaseSchema):
 
 class AttendanceReadSchema(BaseReadSchema):
     """
-    Схема чтения данных посещаемости.
+    Заглушка для схемы чтения посещаемости.
     """
 
     pass

@@ -1,5 +1,5 @@
 """
-Модуль схем для сущности ScheduleGroupLink.
+Схемы Pydantic для связи между расписанием и учебной группой.
 """
 from datetime import datetime
 from typing import Any
@@ -17,6 +17,9 @@ from app.schemas.base import (
 class ScheduleGroupLinkBaseSchema(AppBaseSchema):
     """
     Базовая схема связи расписания и группы.
+
+    Описывает составной смысл записи: какая группа привязана к какой записи
+    расписания.
     """
 
     group_id: int | None = None
@@ -25,7 +28,7 @@ class ScheduleGroupLinkBaseSchema(AppBaseSchema):
 
 class ScheduleGroupLinkCreateSchema(ScheduleGroupLinkBaseSchema):
     """
-    Схема для создания связи.
+    Схема для создания связи между группой и расписанием.
     """
 
     group_id: int
@@ -34,12 +37,18 @@ class ScheduleGroupLinkCreateSchema(ScheduleGroupLinkBaseSchema):
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
+        """
+        Убирает из входных данных служебные поля перед созданием связи.
+
+        :param data: Невалидированные входные данные.
+        :return: Данные без служебных полей.
+        """
         return strip_service_fields(data)
 
 
 class ScheduleGroupLinkFilterSchema(ScheduleGroupLinkBaseSchema):
     """
-    Схема для фильтрации связей.
+    Схема фильтрации связей между группами и расписанием.
     """
 
     id: int | None = None
@@ -52,11 +61,23 @@ class ScheduleGroupLinkFilterSchema(ScheduleGroupLinkBaseSchema):
 class ScheduleGroupLinkUpdateSchema(ScheduleGroupLinkBaseSchema):
     """
     Схема для обновления связи.
+
+    Оставлена только для единообразия интерфейса сервисов. Логически такая
+    связь не обновляется: старая запись удаляется, а новая создается заново.
     """
 
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
+        """
+        Всегда запрещает обновление связи группы и расписания.
+
+        :param data: Невалидированные входные данные.
+        :return: Метод не возвращает значение, так как всегда выбрасывает
+            исключение.
+        :raises ValueError: Всегда, потому что обновление этой сущности не
+            поддерживается.
+        """
         raise ValueError(
             "Связь расписания и группы нельзя обновлять. "
             "Удалите старую связь и создайте новую."
@@ -65,7 +86,7 @@ class ScheduleGroupLinkUpdateSchema(ScheduleGroupLinkBaseSchema):
 
 class ScheduleGroupLinkDeleteSchema(ScheduleGroupLinkBaseSchema):
     """
-    Схема для удаления связи по фильтру.
+    Схема фильтра для удаления связи.
     """
 
     id: int | None = None
@@ -77,6 +98,13 @@ class ScheduleGroupLinkDeleteSchema(ScheduleGroupLinkBaseSchema):
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
+        """
+        Проверяет, что удаление связи выполняется по непустому фильтру.
+
+        :param data: Невалидированные входные данные.
+        :return: Проверенный фильтр удаления.
+        :raises ValueError: Если фильтр удаления пустой.
+        """
         return validate_non_empty_mapping(
             data,
             "Фильтр удаления не должен быть пустым.",
@@ -85,7 +113,7 @@ class ScheduleGroupLinkDeleteSchema(ScheduleGroupLinkBaseSchema):
 
 class ScheduleGroupLinkReadSchema(BaseReadSchema):
     """
-    Схема чтения данных связи.
+    Заглушка для схемы чтения связи.
     """
 
     pass

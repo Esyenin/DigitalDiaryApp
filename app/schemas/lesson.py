@@ -1,5 +1,5 @@
 """
-Модуль схем для сущности Lesson.
+Схемы Pydantic для сущности занятия.
 """
 from datetime import date as date_type
 from datetime import datetime
@@ -20,6 +20,9 @@ from app.schemas.base import (
 class LessonBaseSchema(AppBaseSchema):
     """
     Базовая схема занятия.
+
+    Содержит ссылку на запись расписания и данные, описывающие конкретное
+    проведенное занятие.
     """
 
     schedule_id: int | None = None
@@ -29,6 +32,12 @@ class LessonBaseSchema(AppBaseSchema):
     @field_validator("topic")
     @classmethod
     def validate_strings(cls, value: str | None) -> str | None:
+        """
+        Проверяет поле темы занятия на недопустимую пустую строку.
+
+        :param value: Значение поля `topic`.
+        :return: Исходное значение, если оно допустимо.
+        """
         return validate_not_empty_string(value)
 
 
@@ -44,12 +53,18 @@ class LessonCreateSchema(LessonBaseSchema):
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
+        """
+        Убирает из входных данных служебные поля перед созданием занятия.
+
+        :param data: Невалидированные входные данные.
+        :return: Данные без служебных полей.
+        """
         return strip_service_fields(data)
 
 
 class LessonFilterSchema(LessonBaseSchema):
     """
-    Схема для фильтрации занятий.
+    Схема фильтрации занятий.
     """
 
     id: int | None = None
@@ -72,6 +87,13 @@ class LessonUpdateSchema(LessonBaseSchema):
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
+        """
+        Проверяет, что в обновлении есть хотя бы одно поле.
+
+        :param data: Невалидированные входные данные.
+        :return: Очищенный словарь обновляемых полей.
+        :raises ValueError: Если обновлять нечего.
+        """
         return validate_non_empty_mapping(
             strip_service_fields(data),
             "Для обновления нужно передать хотя бы одно поле.",
@@ -80,7 +102,7 @@ class LessonUpdateSchema(LessonBaseSchema):
 
 class LessonDeleteSchema(LessonBaseSchema):
     """
-    Схема для удаления занятий по фильтру.
+    Схема фильтра для удаления занятий.
     """
 
     id: int | None = None
@@ -93,6 +115,13 @@ class LessonDeleteSchema(LessonBaseSchema):
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
+        """
+        Проверяет, что удаление выполняется по непустому фильтру.
+
+        :param data: Невалидированные входные данные.
+        :return: Проверенный фильтр удаления.
+        :raises ValueError: Если фильтр удаления пустой.
+        """
         return validate_non_empty_mapping(
             data,
             "Фильтр удаления не должен быть пустым.",
@@ -101,7 +130,7 @@ class LessonDeleteSchema(LessonBaseSchema):
 
 class LessonReadSchema(BaseReadSchema):
     """
-    Схема чтения данных занятия.
+    Заглушка для схемы чтения занятия.
     """
 
     pass

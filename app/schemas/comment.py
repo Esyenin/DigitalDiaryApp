@@ -1,5 +1,5 @@
 """
-Модуль схем для сущности Comment.
+Схемы Pydantic для сущности комментария к занятию.
 """
 from datetime import datetime
 from typing import Any
@@ -19,6 +19,9 @@ from app.schemas.base import (
 class CommentBaseSchema(AppBaseSchema):
     """
     Базовая схема комментария.
+
+    Описывает текст комментария и ссылку на студента и занятие, к которым он
+    относится.
     """
 
     student_id: int | None = None
@@ -28,6 +31,12 @@ class CommentBaseSchema(AppBaseSchema):
     @field_validator("data")
     @classmethod
     def validate_strings(cls, value: str | None) -> str | None:
+        """
+        Проверяет поле текста комментария на недопустимую пустую строку.
+
+        :param value: Значение текстового поля комментария.
+        :return: Исходное значение, если оно допустимо.
+        """
         return validate_not_empty_string(value)
 
 
@@ -43,12 +52,18 @@ class CommentCreateSchema(CommentBaseSchema):
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
+        """
+        Убирает из входных данных служебные поля перед созданием комментария.
+
+        :param data: Невалидированные входные данные.
+        :return: Данные без служебных полей.
+        """
         return strip_service_fields(data)
 
 
 class CommentFilterSchema(CommentBaseSchema):
     """
-    Схема для фильтрации комментариев.
+    Схема фильтрации комментариев.
     """
 
     id: int | None = None
@@ -62,6 +77,9 @@ class CommentFilterSchema(CommentBaseSchema):
 class CommentUpdateSchema(AppBaseSchema):
     """
     Схема для обновления комментария.
+
+    Позволяет менять только текст комментария. Привязка к студенту и занятию
+    в этой схеме не редактируется.
     """
 
     data: str | None = Field(default=None, max_length=MAX_LEN["data"])
@@ -69,11 +87,24 @@ class CommentUpdateSchema(AppBaseSchema):
     @field_validator("data")
     @classmethod
     def validate_strings(cls, value: str | None) -> str | None:
+        """
+        Проверяет новое значение текста комментария.
+
+        :param value: Обновляемый текст комментария.
+        :return: Исходное значение, если оно допустимо.
+        """
         return validate_not_empty_string(value)
 
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
+        """
+        Проверяет, что в обновление передан непустой набор полей.
+
+        :param data: Невалидированные входные данные.
+        :return: Очищенный словарь обновляемых полей.
+        :raises ValueError: Если обновлять нечего.
+        """
         return validate_non_empty_mapping(
             strip_service_fields(data),
             "Для обновления нужно передать хотя бы одно поле.",
@@ -82,7 +113,7 @@ class CommentUpdateSchema(AppBaseSchema):
 
 class CommentDeleteSchema(CommentBaseSchema):
     """
-    Схема для удаления комментариев по фильтру.
+    Схема фильтра для удаления комментариев.
     """
 
     id: int | None = None
@@ -95,6 +126,13 @@ class CommentDeleteSchema(CommentBaseSchema):
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
+        """
+        Проверяет, что удаление выполняется по непустому фильтру.
+
+        :param data: Невалидированные входные данные.
+        :return: Проверенный фильтр удаления.
+        :raises ValueError: Если фильтр удаления пустой.
+        """
         return validate_non_empty_mapping(
             data,
             "Фильтр удаления не должен быть пустым.",
@@ -103,7 +141,7 @@ class CommentDeleteSchema(CommentBaseSchema):
 
 class CommentReadSchema(BaseReadSchema):
     """
-    Схема чтения данных комментария.
+    Заглушка для схемы чтения комментария.
     """
 
     pass

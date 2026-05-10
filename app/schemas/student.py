@@ -1,5 +1,5 @@
 """
-Модуль схем для сущности Student.
+Схемы Pydantic для сущности студента.
 """
 from datetime import datetime
 from typing import Any
@@ -20,6 +20,9 @@ from app.schemas.base import (
 class StudentBaseSchema(AppBaseSchema):
     """
     Базовая схема студента.
+
+    Содержит все пользовательские поля, которые могут участвовать
+    в создании, фильтрации или обновлении записи студента.
     """
 
     group_id: int | None = None
@@ -38,6 +41,12 @@ class StudentBaseSchema(AppBaseSchema):
     )
     @classmethod
     def validate_strings(cls, value: str | None) -> str | None:
+        """
+        Проверяет строковые поля студента на недопустимую пустую строку.
+
+        :param value: Значение одного из строковых полей студента.
+        :return: Исходное значение, если оно допустимо.
+        """
         return validate_not_empty_string(value)
 
 
@@ -56,12 +65,21 @@ class StudentCreateSchema(StudentBaseSchema):
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
+        """
+        Убирает из входных данных служебные поля перед созданием студента.
+
+        :param data: Невалидированные входные данные.
+        :return: Данные без служебных полей.
+        """
         return strip_service_fields(data)
 
 
 class StudentFilterSchema(StudentBaseSchema):
     """
-    Схема для фильтрации студентов.
+    Схема фильтрации студентов.
+
+    Разрешает использовать как пользовательские, так и служебные поля
+    сущности в качестве критериев поиска.
     """
 
     id: int | None = None
@@ -78,6 +96,9 @@ class StudentFilterSchema(StudentBaseSchema):
 class StudentUpdateSchema(StudentBaseSchema):
     """
     Схема для обновления студента.
+
+    Предназначена только для тех полей, которые могут быть изменены после
+    создания записи.
     """
 
     group_id: int | None = None
@@ -90,6 +111,14 @@ class StudentUpdateSchema(StudentBaseSchema):
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
+        """
+        Подготавливает данные для частичного обновления студента.
+
+        :param data: Невалидированные входные данные.
+        :return: Очищенный словарь с изменяемыми полями.
+        :raises ValueError: Если обновлять нечего либо критичные поля
+            переданы как `None`.
+        """
         validated = validate_non_empty_mapping(
             strip_service_fields(data),
             "Для обновления нужно передать хотя бы одно поле.",
@@ -100,7 +129,7 @@ class StudentUpdateSchema(StudentBaseSchema):
 
 class StudentDeleteSchema(StudentBaseSchema):
     """
-    Схема для удаления студентов по фильтру.
+    Схема фильтра для удаления студентов.
     """
 
     id: int | None = None
@@ -116,6 +145,13 @@ class StudentDeleteSchema(StudentBaseSchema):
     @model_validator(mode="before")
     @classmethod
     def validate_raw_data(cls, data: Any) -> Any:
+        """
+        Проверяет, что удаление студента выполняется по непустому фильтру.
+
+        :param data: Невалидированные входные данные.
+        :return: Проверенный фильтр удаления.
+        :raises ValueError: Если фильтр удаления пустой.
+        """
         return validate_non_empty_mapping(
             data,
             "Фильтр удаления не должен быть пустым.",
@@ -124,7 +160,7 @@ class StudentDeleteSchema(StudentBaseSchema):
 
 class StudentReadSchema(BaseReadSchema):
     """
-    Схема чтения данных студента.
+    Заглушка для схемы чтения студента.
     """
 
     pass

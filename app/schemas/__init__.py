@@ -1,5 +1,5 @@
 """
-Пакет схем проекта.
+Пакет со всеми Pydantic-схемами проекта.
 """
 from app.schemas.attendance import (
     AttendanceBaseSchema,

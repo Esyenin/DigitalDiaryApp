@@ -1,5 +1,5 @@
 """
-Модуль базовых Pydantic-схем.
+Базовые схемы и общие функции валидации для слоя `app.schemas`.
 """
 from collections.abc import Mapping
 from datetime import datetime
@@ -10,7 +10,10 @@ from pydantic import BaseModel, ConfigDict
 
 class AppBaseSchema(BaseModel):
     """
-    Базовая схема проекта.
+    Общая базовая схема проекта.
+
+    Содержит единые настройки Pydantic, которые применяются ко всем
+    прикладным схемам проекта.
     """
 
     model_config = ConfigDict(
@@ -23,7 +26,7 @@ class AppBaseSchema(BaseModel):
 
 class IdSchema(AppBaseSchema):
     """
-    Схема с полем идентификатора записи.
+    Схема с идентификатором записи.
     """
 
     id: int
@@ -31,7 +34,7 @@ class IdSchema(AppBaseSchema):
 
 class TimestampSchema(AppBaseSchema):
     """
-    Схема с полями времени создания и обновления записи.
+    Схема со служебными полями времени создания и обновления записи.
     """
 
     created_at: datetime
@@ -40,7 +43,10 @@ class TimestampSchema(AppBaseSchema):
 
 class BaseReadSchema(IdSchema, TimestampSchema):
     """
-    Базовая схема чтения данных из БД.
+    Базовая схема чтения данных из базы данных.
+
+    Используется как заглушка для read-схем, когда отдельная структура
+    ответа для сущности пока не требуется.
     """
 
 
@@ -52,7 +58,14 @@ def strip_service_fields(
     field_names: Iterable[str] = SERVICE_FIELD_NAMES,
 ) -> Any:
     """
-    Удаляет служебные поля из входных данных.
+    Удаляет из входных данных служебные поля модели.
+
+    :param data: Произвольные входные данные, которые потенциально содержат
+        служебные поля.
+    :param field_names: Имена полей, которые не должны приниматься схемой как
+        пользовательские данные.
+    :return: Исходный объект без изменений, если это не отображение, либо
+        новый словарь без служебных полей.
     """
     if not isinstance(data, Mapping):
         return data
@@ -69,7 +82,11 @@ def validate_not_empty_string(
         value: str | None
 ) -> str | None:
     """
-    Запрещает пустую строку в строковых полях схем.
+    Проверяет, что строковое значение не является пустой строкой.
+
+    :param value: Значение строкового поля схемы.
+    :return: Исходное значение, если оно допустимо.
+    :raises ValueError: Если передана пустая строка.
     """
     if value == "":
         raise ValueError("Пустая строка не допускается.")
@@ -82,7 +99,12 @@ def validate_non_empty_mapping(
         message: str
 ) -> Any:
     """
-    Проверяет, что данные представлены непустым словарем.
+    Проверяет, что входные данные представлены непустым отображением.
+
+    :param data: Данные, переданные в схему до валидации Pydantic.
+    :param message: Текст ошибки, который нужно вернуть при невалидных данных.
+    :return: Исходные данные, если они представлены непустым отображением.
+    :raises ValueError: Если данные не являются отображением или оно пустое.
     """
     if not isinstance(data, Mapping) or not data:
         raise ValueError(message)
@@ -95,7 +117,14 @@ def validate_not_none_fields(
     field_names: Iterable[str],
 ) -> None:
     """
-    Проверяет, что перечисленные поля, если переданы, не равны None.
+    Проверяет, что указанные поля, если они присутствуют во входных данных,
+    не содержат значение `None`.
+
+    :param data: Словарь данных, прошедший предварительную нормализацию.
+    :param field_names: Имена полей, для которых значение `None`
+        недопустимо.
+    :raises ValueError: Если хотя бы одно из перечисленных полей явно равно
+        `None`.
     """
     for field_name in field_names:
         if field_name in data and data[field_name] is None:
