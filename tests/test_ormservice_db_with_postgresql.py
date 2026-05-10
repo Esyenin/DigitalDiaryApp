@@ -13,6 +13,7 @@ import logging
 import pytest
 from sqlalchemy.orm import sessionmaker
 
+from app.io_tools import ImportExportService
 from app.models import (
     Attendance,
     Comment,
@@ -31,6 +32,7 @@ from app.services import (
     LessonService,
     MarkService,
     OrmService,
+    OrmServiceError,
     ScheduleGroupLinkService,
     ScheduleService,
     StudentService,
@@ -564,9 +566,9 @@ def test_ormservice_create_accepts_dict_schema_and_model(case, db_session):
     created_from_schema = orm_service.create(create_schema(**schema_data))
     created_from_model = orm_service.create(model_cls(**model_data))
 
-    assert type(created_from_dict) is model_cls
-    assert type(created_from_schema) is model_cls
-    assert type(created_from_model) is model_cls
+    assert isinstance(created_from_dict, model_cls)
+    assert isinstance(created_from_schema, model_cls)
+    assert isinstance(created_from_model, model_cls)
     assert created_from_dict.id is not None
     assert created_from_schema.id is not None
     assert created_from_model.id is not None
@@ -587,7 +589,7 @@ def test_ormservice_get_update_delete_by_schema(case, db_session):
     create_data = _prepared_case_data(db_session, case)
     created = orm_service.create(case["create_schema"](**create_data))
 
-    assert type(created) is case["model_cls"]
+    assert isinstance(created, case["model_cls"])
 
     filter_schema = case["filter_schema"]
     found = orm_service.get(filter_schema(id=created.id))
@@ -693,7 +695,7 @@ def test_ormservice_new_crud_flow(db_session):
         }
     )
 
-    assert type(schedule) is Schedule
+    assert isinstance(schedule, Schedule)
     assert schedule.id is not None
 
     db_schedule = orm_service.get(Schedule(day="mon"))[0]
@@ -732,7 +734,7 @@ def test_ormservice_resolves_payload_by_schema(db_session):
         )
     )
 
-    assert type(schedule) is Schedule
+    assert isinstance(schedule, Schedule)
     assert schedule.id is not None
 
     schedules = orm_service.get(ScheduleFilterSchema(id=schedule.id))
@@ -805,7 +807,7 @@ def test_ormservice_supports_session_factory_context_manager(db_session):
             )
         )
 
-        assert type(schedule) is Schedule
+        assert isinstance(schedule, Schedule)
         assert schedule.id is not None
 
 
@@ -852,3 +854,70 @@ def test_ormservice_rejects_invalid_known_payload_and_logs(
         assert orm_service.create(invalid_schedule) is None
 
     assert "Create rejected" in caplog.text
+
+
+def test_ormservice_exports_selected_models_to_xlsx(db_session, tmp_path):
+    """
+    Проверяет экспорт выбранных сущностей через ORM-фасад в XLSX-файл.
+
+    :param db_session: SQLAlchemy-сессия тестовой базы данных.
+    :param tmp_path: Временная директория pytest для создания XLSX-файла.
+
+    :return: `None`. Тест падает, если фасад не может собрать данные модели,
+        передать их в io_tools и получить корректный XLSX с нужным листом.
+    """
+    group = _seed_group(db_session)
+    orm_service = OrmService(db_session, auto_commit=False)
+    file_path = tmp_path / "groups_export.xlsx"
+
+    exported_path = orm_service.export_to_xlsx(["group"], file_path)
+    imported = ImportExportService().import_from_xlsx(exported_path)
+
+    assert exported_path == file_path
+    assert tuple(imported) == ("groups",)
+    assert imported["groups"][0]["name"] == group.name
+
+
+def test_ormservice_imports_selected_models_from_xlsx(db_session, tmp_path):
+    """
+    Проверяет импорт выбранных сущностей из XLSX-файла через ORM-фасад.
+
+    :param db_session: SQLAlchemy-сессия тестовой базы данных.
+    :param tmp_path: Временная директория pytest для создания XLSX-файла.
+
+    :return: `None`. Тест падает, если фасад не может прочитать XLSX,
+        создать объекты через сервисы сущностей и сохранить их в базе.
+    """
+    orm_service = OrmService(db_session, auto_commit=False)
+    group = orm_service.create(
+        GroupCreateSchema(
+            name="IU7-77",
+            speciality="09.03.01_Informatics",
+        )
+    )
+    file_path = tmp_path / "group_import.xlsx"
+
+    orm_service.export_to_xlsx(["groups"], file_path)
+    assert orm_service.delete(GroupDeleteSchema(id=group.id)) == 1
+
+    imported_counts = orm_service.import_from_xlsx(file_path, ["group"])
+    imported_groups = orm_service.get(GroupFilterSchema(name="IU7-77"))
+
+    assert imported_counts == {"groups": 1}
+    assert len(imported_groups) == 1
+    assert imported_groups[0].name == "IU7-77"
+
+
+def test_ormservice_rejects_unknown_model_name_for_xlsx(db_session, tmp_path):
+    """
+    Проверяет отказ фасада при неизвестном имени модели для XLSX-операций.
+
+    :param db_session: SQLAlchemy-сессия тестовой базы данных.
+    :param tmp_path: Временная директория pytest для создания XLSX-файла.
+
+    :return: `None`. Тест падает, если фасад принимает неподдерживаемое имя модели.
+    """
+    orm_service = OrmService(db_session, auto_commit=False)
+
+    with pytest.raises(OrmServiceError):
+        orm_service.export_to_xlsx(["unknown_model"], tmp_path / "broken.xlsx")

@@ -41,15 +41,6 @@ class TimestampSchema(AppBaseSchema):
     updated_at: datetime
 
 
-class BaseReadSchema(IdSchema, TimestampSchema):
-    """
-    Базовая схема чтения данных из базы данных.
-
-    Используется как заглушка для read-схем, когда отдельная структура
-    ответа для сущности пока не требуется.
-    """
-
-
 SERVICE_FIELD_NAMES = frozenset({"id", "created_at", "updated_at"})
 
 

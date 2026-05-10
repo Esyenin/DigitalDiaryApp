@@ -8,7 +8,6 @@ from pydantic import model_validator
 
 from app.schemas.base import (
     AppBaseSchema,
-    BaseReadSchema,
     strip_service_fields,
     validate_non_empty_mapping,
 )
@@ -109,11 +108,3 @@ class ScheduleGroupLinkDeleteSchema(ScheduleGroupLinkBaseSchema):
             data,
             "Фильтр удаления не должен быть пустым.",
         )
-
-
-class ScheduleGroupLinkReadSchema(BaseReadSchema):
-    """
-    Заглушка для схемы чтения связи.
-    """
-
-    pass
