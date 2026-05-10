@@ -1,165 +1,172 @@
 """
-Общий ORM-сервис проекта.
+Общий ORM-фасад приложения.
 
-OrmService владеет сессией SQLAlchemy на уровне сценария работы,
-выбирает конкретный сервис сущности и выполняет операции с БД.
+Модуль содержит сервис верхнего уровня, который автоматически находит
+сервисы конкретных сущностей, определяет нужный сервис по входным данным,
+управляет SQLAlchemy-сессией и выполняет CRUD-операции через единый API.
 """
 from __future__ import annotations
-# pylint: disable=too-many-arguments
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
+import importlib
+import inspect
 import logging
-import re
-from typing import Any
+import pkgutil
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
+import app.services as services_package
 from app.models import Base
-from app.services.attendance import AttendanceService
 from app.services.base import BaseService
-from app.services.comment import CommentService
-from app.services.group import GroupService
-from app.services.lesson import LessonService
-from app.services.mark import MarkService
-from app.services.schedule import ScheduleService
-from app.services.schedule_group_links import ScheduleGroupLinkService
-from app.services.student import StudentService
 
 
 Payload = BaseModel | Base | Mapping[str, object]
-ServiceTarget = str | type[Base] | Base | BaseService[Any]
+Operation = Literal["create", "get", "update", "delete"]
+
 logger = logging.getLogger(__name__)
 
 
-def _to_snake_case(value: str) -> str:
+class OrmServiceError(Exception):
     """
-    Переводит имя класса в snake_case.
+    Базовое исключение ORM-фасада.
+
+    Используется как общий родитель для ошибок, связанных не с конкретной
+    таблицей, а с работой самого `OrmService`: определением сервиса,
+    неоднозначностью входных данных или неверной настройкой сессии.
     """
-    return re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
+
+
+class UnknownServiceError(OrmServiceError):
+    """
+    Ошибка, возникающая при невозможности определить сервис сущности.
+
+    Исключение означает, что по переданному ORM-объекту, Pydantic-схеме или
+    словарю не найден ни один сервис, который может обработать операцию.
+    """
+
+
+class AmbiguousServiceError(OrmServiceError):
+    """
+    Ошибка неоднозначного определения сервиса сущности.
+
+    Исключение означает, что один и тот же словарь подходит схемам нескольких
+    сервисов, поэтому фасад не может безопасно выбрать модель сам.
+    """
 
 
 class OrmService:
     """
-    Верхний сервис для работы с ORM-операциями.
+    Фасад для работы с ORM-операциями приложения.
 
-    Класс не заменяет конкретные сервисы. Он координирует их:
-    - хранит активную сессию;
-    - находит сервис по имени сущности, ORM-классу или ORM-объекту;
-    - выполняет create/select/update/delete;
-    - логирует отклоненные payload-ы и ошибки транзакций.
+    Класс скрывает от внешнего кода детали выбора конкретного сервиса
+    сущности. Пользователь передает ORM-объект, Pydantic-схему или словарь,
+    а фасад сам выбирает подходящий сервис, вызывает его методы и применяет
+    результат к SQLAlchemy-сессии.
+
+    Публичные методы:
+        create: создает ORM-объект и добавляет его в сессию.
+
+        get: получает список ORM-объектов по фильтру.
+
+        update: обновляет найденные ORM-объекты.
+
+        delete: удаляет ORM-объекты по фильтру или переданному объекту.
+
+        commit: подтверждает текущую транзакцию.
+
+        rollback: откатывает текущую транзакцию.
+
+        close: закрывает текущую SQLAlchemy-сессию.
     """
 
-    _default_service_classes = (
-        GroupService,
-        StudentService,
-        ScheduleService,
-        ScheduleGroupLinkService,
-        LessonService,
-        AttendanceService,
-        MarkService,
-        CommentService,
-    )
+    _schema_attr_by_operation = {
+        "create": "create_schema",
+        "get": "select_schema",
+        "update": "update_schema",
+        "delete": "delete_schema",
+    }
 
     def __init__(
         self,
-        session: Session,
-        services: Iterable[BaseService[Any]] | None = None,
+        session: Session | None = None,
         *,
-        auto_commit: bool = False,
-        close_on_exit: bool = False,
+        session_factory: sessionmaker | None = None,
+        auto_commit: bool = True,
+        close_on_exit: bool = True,
         service_logger: logging.Logger | None = None,
     ) -> None:
-        self.session = session
+        """
+        Инициализирует ORM-фасад и регистрирует найденные сервисы.
+
+        :param session: Готовая SQLAlchemy-сессия. Если передана, фасад будет
+            работать именно с ней.
+        :param session_factory: Фабрика, создающая SQLAlchemy-сессию. Используется
+            только если готовая `session` не передана.
+        :param auto_commit: Если `True`, write-операции завершаются `commit`.
+            Если `False`, после write-операций выполняется только `flush`.
+        :param close_on_exit: Нужно ли закрывать сессию при выходе из context
+            manager.
+        :param service_logger: Logger, который будет использовать фасад. Если
+            параметр не передан, используется logger этого модуля.
+
+        :raises OrmServiceError: Если не передана ни готовая сессия, ни фабрика
+            сессий.
+        """
+        self.logger = service_logger or logger
+        self.logger.debug("OrmService initialization started.")
+
+        if session is None and session_factory is None:
+            self.logger.error(
+                "OrmService initialization failed: no session provider."
+            )
+            raise OrmServiceError("session or session_factory is required.")
+
+        self.session = session if session is not None else session_factory()
         self.auto_commit = auto_commit
         self.close_on_exit = close_on_exit
-        self.logger = service_logger or logger
-        self._services_by_name: dict[str, BaseService[Any]] = {}
         self._services_by_model: dict[type[Base], BaseService[Any]] = {}
+        self._services_by_schema: dict[type[BaseModel], BaseService[Any]] = {}
 
-        for service in services or self._build_default_services():
-            self.register(service)
+        for service in self._build_services():
+            self._register_service(service)
 
-    @classmethod
-    def _build_default_services(cls) -> tuple[BaseService[Any], ...]:
+        self.logger.info(
+            "OrmService initialized. services_count=%s.",
+            len(self._services_by_model),
+        )
+
+    def __enter__(self) -> OrmService:
         """
-        Создает стандартный набор сервисов сущностей.
+        Входит в context manager для работы с ORM-фасадом.
+
+        :return: Текущий экземпляр `OrmService`, с которым будет работать блок
+            `with`.
         """
-        return tuple(service_class() for service_class in cls._default_service_classes)
-
-    @staticmethod
-    def _normalize_name(name: str) -> str:
-        """
-        Приводит пользовательский ключ сервиса к единому виду.
-        """
-        return name.strip().lower().replace("-", "_")
-
-    @classmethod
-    def _default_aliases(cls, service: BaseService[Any]) -> set[str]:
-        """
-        Возвращает естественные имена, по которым можно найти сервис.
-        """
-        model_name = service.model.__name__
-        snake_model_name = _to_snake_case(model_name)
-        table_name = getattr(service.model, "__tablename__", "")
-
-        return {
-            cls._normalize_name(model_name),
-            cls._normalize_name(snake_model_name),
-            cls._normalize_name(f"{snake_model_name}s"),
-            cls._normalize_name(table_name),
-        }
-
-    def register(
-        self,
-        service: BaseService[Any],
-        aliases: Iterable[str] | None = None,
-    ) -> None:
-        """
-        Регистрирует конкретный сервис в общем ORM-сервисе.
-        """
-        self._services_by_model[service.model] = service
-        service_aliases = self._default_aliases(service)
-        if aliases is not None:
-            service_aliases.update(self._normalize_name(alias) for alias in aliases)
-
-        for alias in service_aliases:
-            self._services_by_name[alias] = service
-
-    def service(self, target: ServiceTarget) -> BaseService[Any] | None:
-        """
-        Возвращает конкретный сервис по имени, модели, объекту или самому сервису.
-        """
-        if isinstance(target, BaseService):
-            return target
-
-        if isinstance(target, str):
-            service = self._services_by_name.get(self._normalize_name(target))
-            if service is None:
-                self.logger.error("Unknown ORM service name: %s.", target)
-            return service
-
-        if isinstance(target, type) and issubclass(target, Base):
-            service = self._services_by_model.get(target)
-            if service is None:
-                self.logger.error("Unknown ORM model class: %s.", target.__name__)
-            return service
-
-        if isinstance(target, Base):
-            return self.service(type(target))
-
-        self.logger.error("Unsupported ORM service target: %r.", target)
-        return None
-
-    def __enter__(self) -> "OrmService":
+        self.logger.info("OrmService context enter.")
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        """
+        Завершает работу context manager.
+
+        :param exc_type: Тип исключения, возникшего внутри блока `with`, или
+            `None`, если блок завершился успешно.
+        :param exc_value: Экземпляр исключения или `None`.
+        :param traceback: Объект traceback для возникшего исключения или `None`.
+
+        :return: `False`, чтобы исключения из блока `with` не подавлялись и могли
+            быть обработаны вызывающим кодом.
+        """
+        self.logger.info("OrmService context exit started.")
+
         if exc_type is not None:
             self.rollback()
             self.logger.error(
-                "OrmService context failed.",
+                "OrmService context exited with error.",
                 exc_info=(exc_type, exc_value, traceback),
             )
         elif self.auto_commit:
@@ -168,290 +175,725 @@ class OrmService:
         if self.close_on_exit:
             self.close()
 
+        self.logger.info("OrmService context exit finished.")
         return False
 
-    def _should_commit(self, commit: bool | None) -> bool:
+    @classmethod
+    def _discover_service_classes(cls) -> tuple[type[BaseService[Any]], ...]:
         """
-        Определяет, нужно ли завершать операцию commit-ом.
-        """
-        if commit is None:
-            return self.auto_commit
+        Находит классы сервисов сущностей в пакете `app.services`.
 
-        return commit
+        Метод просматривает модули пакета сервисов, пропускает базовые и
+        служебные модули, импортирует остальные и выбирает классы, которые
+        наследуются от `BaseService` и явно объявляют ORM-модель.
 
-    def _finish_write(self, action: str, commit: bool | None) -> bool:
+        :return: Кортеж классов сервисов, доступных для автоматической регистрации.
         """
-        Завершает write-операцию flush-ем или commit-ом.
-        """
-        try:
-            if self._should_commit(commit):
-                self.session.commit()
-            else:
-                self.session.flush()
-            return True
-        except SQLAlchemyError:
-            self.rollback()
-            self.logger.exception("OrmService %s failed while saving changes.", action)
-            return False
+        discovered: list[type[BaseService[Any]]] = []
+        logger.debug("Service discovery started.")
 
-    def commit(self) -> bool:
-        """
-        Явно подтверждает транзакцию.
-        """
-        try:
-            self.session.commit()
-            self.logger.debug("OrmService session committed.")
-            return True
-        except SQLAlchemyError:
-            self.rollback()
-            self.logger.exception("OrmService commit failed.")
-            return False
+        for module_info in pkgutil.iter_modules(services_package.__path__):
+            if module_info.name in {"base", "ormservice", "__init__"}:
+                logger.debug(
+                    "Service discovery skipped module=%s.",
+                    module_info.name,
+                )
+                continue
 
-    def rollback(self) -> None:
-        """
-        Откатывает текущую транзакцию.
-        """
-        self.session.rollback()
-        self.logger.debug("OrmService session rolled back.")
+            module = importlib.import_module(
+                f"{services_package.__name__}.{module_info.name}"
+            )
 
-    def close(self) -> None:
-        """
-        Закрывает текущую сессию.
-        """
-        self.session.close()
-        self.logger.debug("OrmService session closed.")
+            for _, obj in inspect.getmembers(module, inspect.isclass):
+                if obj is BaseService:
+                    continue
+                if not issubclass(obj, BaseService):
+                    continue
+                if obj.__module__ != module.__name__:
+                    continue
+                if getattr(obj, "model", None) is None:
+                    logger.debug(
+                        "Service discovery skipped class=%s without model.",
+                        obj.__name__,
+                    )
+                    continue
 
-    def create(
+                discovered.append(obj)
+                logger.debug("Service discovered: %s.", obj.__name__)
+
+        logger.info("Service discovery finished. count=%s.", len(discovered))
+        return tuple(discovered)
+
+    @classmethod
+    def _build_services(cls) -> tuple[BaseService[Any], ...]:
+        """
+        Создает экземпляры автоматически найденных сервисов.
+
+        :return: Кортеж готовых экземпляров сервисов сущностей.
+        """
+        logger.debug("Service building started.")
+        services = tuple(
+            service_class()
+            for service_class in cls._discover_service_classes()
+        )
+        logger.info("Service building finished. count=%s.", len(services))
+        return services
+
+    def _register_service(self, service: BaseService[Any]) -> None:
+        """
+        Регистрирует сервис во внутренних индексах фасада.
+
+        :param service: Экземпляр сервиса конкретной сущности. Сервис должен
+            иметь поле `model` и набор схем, по которым фасад сможет
+            определять его для разных операций.
+
+        :return: `None`. Метод изменяет внутренние словари регистрации.
+        """
+        self._services_by_model[service.model] = service
+
+        for schema in self._service_schemas(service):
+            self._services_by_schema[schema] = service
+
+        self.logger.debug(
+            "Service registered. service=%s model=%s.",
+            service.__class__.__name__,
+            service.model.__name__,
+        )
+
+    def _service_schemas(
         self,
-        target: ServiceTarget,
-        data: Payload,
-        *,
-        commit: bool | None = None,
-    ) -> Base | None:
+        service: BaseService[Any],
+    ) -> tuple[type[BaseModel], ...]:
         """
-        Создает ORM-объект через конкретный сервис и добавляет его в сессию.
+        Собирает схемы, объявленные в сервисе сущности.
+
+        :param service: Сервис, из которого нужно получить схемы создания,
+            чтения, обновления и удаления.
+
+        :return: Кортеж Pydantic-схем, найденных в сервисе. Отсутствующие схемы
+            в результат не добавляются.
         """
-        service = self.service(target)
-        if service is None:
+        schemas = []
+
+        for attr_name in self._schema_attr_by_operation.values():
+            schema = getattr(service, attr_name, None)
+            if schema is not None:
+                schemas.append(schema)
+
+        return tuple(schemas)
+
+    def _schema_for_operation(
+        self,
+        service: BaseService[Any],
+        operation: Operation,
+    ) -> type[BaseModel] | None:
+        """
+        Возвращает схему сервиса для конкретной CRUD-операции.
+
+        :param service: Сервис сущности, у которого нужно взять схему.
+        :param operation: Имя операции: `create`, `get`, `update` или `delete`.
+
+        :return: Класс Pydantic-схемы для операции или `None`, если у сервиса нет
+            соответствующей схемы.
+        """
+        return getattr(service, self._schema_attr_by_operation[operation], None)
+
+    def _extract_data(self, data: Payload | None) -> dict[str, object] | None:
+        """
+        Приводит входные данные фасада к обычному словарю.
+
+        :param data: ORM-объект, Pydantic-схема, mapping-объект или `None`.
+
+        :return: Словарь с публичными значениями payload. Для Pydantic-схем
+            возвращаются только явно переданные поля. Для ORM-объектов
+            исключаются служебные атрибуты SQLAlchemy. Если тип не
+            поддерживается, возвращается `None`.
+        """
+        if data is None:
+            self.logger.debug("Payload extraction skipped: payload is None.")
             return None
 
-        instance = service.create_instance(data)
-        if instance is None:
-            self.logger.warning(
-                "Create payload rejected by %s.",
+        if isinstance(data, BaseModel):
+            self.logger.debug(
+                "Payload extracted from Pydantic schema=%s.",
+                data.__class__.__name__,
+            )
+            return data.model_dump(exclude_unset=True)
+
+        if isinstance(data, Mapping):
+            self.logger.debug("Payload extracted from mapping.")
+            return dict(data)
+
+        if isinstance(data, Base):
+            self.logger.debug(
+                "Payload extracted from ORM object=%s.",
+                data.__class__.__name__,
+            )
+            return {
+                key: value
+                for key, value in data.__dict__.items()
+                if not key.startswith("_")
+            }
+
+        self.logger.warning(
+            "Payload extraction failed: unsupported type=%s.",
+            type(data).__name__,
+        )
+        return None
+
+    @staticmethod
+    def _schema_accepts(
+        schema: type[BaseModel] | None,
+        data: dict[str, object] | None,
+    ) -> bool:
+        """
+        Проверяет, принимает ли схема переданный словарь.
+
+        :param schema: Pydantic-схема, через которую нужно проверить данные.
+        :param data: Словарь данных для проверки.
+
+        :return: `True`, если схема существует и данные успешно валидируются.
+            `False`, если схемы нет, данных нет или проверка завершилась
+            ошибкой.
+        """
+        if schema is None or data is None:
+            return False
+
+        try:
+            schema.model_validate(data)
+        except ValidationError:
+            return False
+
+        return True
+
+    def _service_from_model(self, model: type[Base]) -> BaseService[Any]:
+        """
+        Находит сервис по классу ORM-модели.
+
+        :param model: Класс SQLAlchemy-модели, для которой нужен сервис.
+
+        :return: Зарегистрированный сервис, связанный с моделью.
+
+        :raises UnknownServiceError: Если для модели не зарегистрирован сервис.
+        """
+        service = self._services_by_model.get(model)
+        if service is None:
+            self.logger.error(
+                "Service resolving failed: unknown model=%s.",
+                model.__name__,
+            )
+            raise UnknownServiceError(
+                f"No service registered for model {model.__name__}."
+            )
+
+        return service
+
+    def _service_from_schema(self, schema: BaseModel) -> BaseService[Any] | None:
+        """
+        Находит сервис по экземпляру Pydantic-схемы.
+
+        :param schema: Экземпляр схемы, который был передан во внешний CRUD-метод.
+
+        :return: Сервис, зарегистрированный для класса этой схемы, или `None`, если
+            подходящий сервис не найден.
+        """
+        service = self._services_by_schema.get(type(schema))
+        if service is not None:
+            return service
+
+        for schema_class, candidate in self._services_by_schema.items():
+            if isinstance(schema, schema_class):
+                return candidate
+
+        return None
+
+    def _matching_services(
+        self,
+        data: Payload,
+        operation: Operation,
+    ) -> list[BaseService[Any]]:
+        """
+        Ищет сервисы, схемы которых принимают переданный payload.
+
+        :param data: Payload операции в виде ORM-объекта, Pydantic-схемы или
+            mapping-объекта.
+        :param operation: Операция, для которой подбирается сервис.
+
+        :return: Список сервисов, чьи схемы для указанной операции успешно приняли
+            данные.
+        """
+        raw_data = self._extract_data(data)
+        if raw_data is None:
+            return []
+
+        matches = []
+
+        for service in self._services_by_model.values():
+            schema = self._schema_for_operation(service, operation)
+            if self._schema_accepts(schema, raw_data):
+                matches.append(service)
+
+        self.logger.debug(
+            "Service matching finished. operation=%s matches=%s.",
+            operation,
+            [service.model.__name__ for service in matches],
+        )
+        return matches
+
+    def _resolve_service(
+        self,
+        data: Payload,
+        operation: Operation,
+    ) -> BaseService[Any]:
+        """
+        Определяет сервис, который должен обработать операцию.
+
+        :param data: Payload операции. ORM-объект определяет сервис по своему
+            классу, Pydantic-схема - по классу схемы, словарь - через
+            проверку схем всех сервисов.
+        :param operation: Операция, для которой нужен сервис.
+
+        :return: Единственный сервис, подходящий для payload и операции.
+
+        :raises UnknownServiceError: Если сервис определить невозможно.
+        :raises AmbiguousServiceError: Если словарь подходит нескольким сервисам.
+        """
+        self.logger.debug(
+            "Service resolving started. operation=%s payload_type=%s.",
+            operation,
+            type(data).__name__,
+        )
+
+        if isinstance(data, Base):
+            service = self._service_from_model(type(data))
+            self.logger.debug(
+                "Service resolved by ORM object. service=%s.",
                 service.__class__.__name__,
             )
-            return None
+            return service
 
-        try:
-            self.session.add(instance)
-            if not self._finish_write("create", commit):
-                return None
-            self.logger.info(
-                "Created %s with id=%s.",
-                service.model.__name__,
-                getattr(instance, "id", None),
-            )
-            return instance
-        except SQLAlchemyError:
-            self.rollback()
-            self.logger.exception("OrmService create failed for %s.", service.model.__name__)
-            return None
-
-    def create_many(
-        self,
-        target: ServiceTarget,
-        items: Iterable[Payload],
-        *,
-        commit: bool | None = None,
-    ) -> list[Base] | None:
-        """
-        Создает несколько ORM-объектов одной сущности.
-        """
-        service = self.service(target)
-        if service is None:
-            return None
-
-        instances = []
-        for item in items:
-            instance = service.create_instance(item)
-            if instance is None:
-                self.logger.warning(
-                    "Create-many payload rejected by %s.",
-                    service.__class__.__name__,
+        if isinstance(data, BaseModel):
+            service = self._service_from_schema(data)
+            if service is None:
+                self.logger.error(
+                    "Service resolving failed: unknown schema=%s.",
+                    data.__class__.__name__,
                 )
-                return None
-            instances.append(instance)
+                raise UnknownServiceError(
+                    f"No service registered for schema "
+                    f"{data.__class__.__name__}."
+                )
 
-        try:
-            self.session.add_all(instances)
-            if not self._finish_write("create_many", commit):
-                return None
-            self.logger.info(
-                "Created %s %s objects.",
-                len(instances),
-                service.model.__name__,
+            self.logger.debug(
+                "Service resolved by Pydantic schema. service=%s.",
+                service.__class__.__name__,
             )
-            return instances
-        except SQLAlchemyError:
-            self.rollback()
-            self.logger.exception(
-                "OrmService create_many failed for %s.",
-                service.model.__name__,
-            )
-            return None
+            return service
 
-    def get_many(
+        if not isinstance(data, Mapping):
+            self.logger.error(
+                "Service resolving failed: unsupported payload type=%s.",
+                type(data).__name__,
+            )
+            raise UnknownServiceError(
+                f"Unsupported payload type: {type(data).__name__}."
+            )
+
+        matches = self._matching_services(data, operation)
+
+        if not matches:
+            self.logger.error(
+                "Service resolving failed: no matching service. "
+                "operation=%s payload=%r.",
+                operation,
+                data,
+            )
+            raise UnknownServiceError(
+                f"Payload does not match any service for {operation}."
+            )
+
+        if len(matches) > 1:
+            names = ", ".join(service.model.__name__ for service in matches)
+            self.logger.error(
+                "Service resolving failed: ambiguous payload. "
+                "operation=%s matches=%s payload=%r.",
+                operation,
+                names,
+                data,
+            )
+            raise AmbiguousServiceError(
+                f"Payload is ambiguous for {operation}. "
+                f"Matching models: {names}."
+            )
+
+        self.logger.debug(
+            "Service resolved by payload. service=%s.",
+            matches[0].__class__.__name__,
+        )
+        return matches[0]
+
+    def _resolve_update_service(
         self,
-        target: ServiceTarget,
-        filters: Payload | None = None,
+        filters_or_obj: Payload,
+        data: Payload,
+    ) -> BaseService[Any]:
+        """
+        Определяет сервис для операции обновления.
+
+        :param filters_or_obj: ORM-объект для прямого обновления или фильтр,
+            по которому нужно найти обновляемые объекты.
+        :param data: Payload с изменяемыми полями.
+
+        :return: Сервис сущности, которую нужно обновлять.
+
+        :raises OrmServiceError: Если сервис нельзя определить ни по объекту,
+            ни по данным обновления, ни по фильтру.
+        """
+        if isinstance(filters_or_obj, Base):
+            return self._service_from_model(type(filters_or_obj))
+
+        resolving_errors: list[OrmServiceError] = []
+
+        for payload, operation in ((data, "update"), (filters_or_obj, "get")):
+            try:
+                return self._resolve_service(payload, operation)
+            except OrmServiceError as exc:
+                resolving_errors.append(exc)
+
+        raise resolving_errors[0]
+
+    def _filter_data(self, filters: Payload) -> dict[str, object] | None:
+        """
+        Приводит фильтр операции к словарю.
+
+        :param filters: Фильтр в виде ORM-объекта, Pydantic-схемы или
+            mapping-объекта.
+
+        :return: Словарь фильтра или `None`, если фильтр нельзя преобразовать.
+        """
+        return self._extract_data(filters)
+
+    def _select_objects(
+        self,
+        service: BaseService[Any],
+        filters: Payload,
     ) -> list[Base] | None:
         """
-        Возвращает список объектов по фильтру.
-        """
-        service = self.service(target)
-        if service is None:
-            return None
+        Выполняет выборку ORM-объектов через конкретный сервис.
 
-        stmt = service.build_select(filters)
+        :param service: Сервис сущности, который строит Select-запрос.
+        :param filters: Фильтр выборки, переданный пользователем фасада.
+
+        :return: Список найденных ORM-объектов. Если фильтр отклонен схемой или
+            база данных вернула ошибку, возвращается `None`.
+        """
+        filter_data = self._filter_data(filters)
+        stmt = service.build_select(filter_data)
+
         if stmt is None:
             self.logger.warning(
-                "Select payload rejected by %s.",
+                "Select rejected. service=%s filters=%r.",
                 service.__class__.__name__,
+                filters,
             )
             return None
 
         try:
             result = list(self.session.scalars(stmt).all())
-            self.logger.debug(
-                "Selected %s %s objects.",
-                len(result),
-                service.model.__name__,
-            )
-            return result
         except SQLAlchemyError:
             self.rollback()
-            self.logger.exception("OrmService select failed for %s.", service.model.__name__)
+            self.logger.exception(
+                "Select failed. service=%s filters=%r.",
+                service.__class__.__name__,
+                filters,
+            )
             return None
 
-    def get_one(
-        self,
-        target: ServiceTarget,
-        filters: Payload | None = None,
-    ) -> Base | None:
+        self.logger.info(
+            "Select finished. model=%s count=%s.",
+            service.model.__name__,
+            len(result),
+        )
+        return result
+
+    def _save(self, action: str) -> bool:
         """
-        Возвращает первый объект по фильтру.
+        Сохраняет изменения текущей операции в SQLAlchemy-сессии.
+
+        :param action: Название операции, ради которой выполняется сохранение.
+            Используется только для логирования.
+
+        :return: `True`, если `commit` или `flush` прошел успешно. `False`, если
+            SQLAlchemy вернула ошибку и изменения были откатаны.
         """
-        objects = self.get_many(target, filters)
-        if not objects:
+        self.logger.debug("Save started. action=%s.", action)
+
+        try:
+            if self.auto_commit:
+                self.session.commit()
+                self.logger.info("Commit finished. action=%s.", action)
+            else:
+                self.session.flush()
+                self.logger.info("Flush finished. action=%s.", action)
+        except SQLAlchemyError:
+            self.rollback()
+            self.logger.exception("Save failed. action=%s.", action)
+            return False
+
+        return True
+
+    def create(self, data: Payload) -> Base | None:
+        """
+        Создает ORM-объект и добавляет его в текущую сессию.
+
+        :param data: Данные создаваемой записи в виде словаря, Pydantic-схемы
+            или ORM-объекта.
+
+        :return: Созданный ORM-объект после добавления в сессию и сохранения
+            изменений. Если данные отклонены схемой или сохранение завершилось
+            ошибкой, возвращается `None`.
+
+        :raises OrmServiceError: Если фасад не может определить сервис по payload.
+        """
+        self.logger.info("Create started. payload_type=%s.", type(data).__name__)
+
+        service = self._resolve_service(data, "create")
+        instance = service.create_instance(data)
+
+        if instance is None:
+            self.logger.warning(
+                "Create rejected. service=%s payload=%r.",
+                service.__class__.__name__,
+                data,
+            )
             return None
 
-        return objects[0]
+        try:
+            self.session.add(instance)
+        except SQLAlchemyError:
+            self.rollback()
+            self.logger.exception(
+                "Create failed while adding object. model=%s.",
+                service.model.__name__,
+            )
+            return None
 
-    def get(
-        self,
-        target: ServiceTarget,
-        filters: Payload | None = None,
-    ) -> list[Base] | None:
+        if not self._save("create"):
+            return None
+
+        self.logger.info(
+            "Create finished. model=%s id=%s.",
+            service.model.__name__,
+            getattr(instance, "id", None),
+        )
+        return instance
+
+    def get(self, filters: Payload) -> list[Base]:
         """
-        Совместимое короткое имя для get_many.
+        Получает ORM-объекты по фильтру.
+
+        :param filters: Фильтр поиска в виде словаря, Pydantic-схемы или
+            ORM-объекта.
+
+        :return: Список найденных ORM-объектов. Если фильтр отклонен или при
+            выполнении запроса произошла ошибка, возвращается пустой список.
+
+        :raises OrmServiceError: Если фасад не может определить сервис по фильтру.
         """
-        return self.get_many(target, filters)
+        self.logger.info("Get started. payload_type=%s.", type(filters).__name__)
+
+        service = self._resolve_service(filters, "get")
+        objects = self._select_objects(service, filters)
+
+        if objects is None:
+            self.logger.warning(
+                "Get rejected. service=%s filters=%r.",
+                service.__class__.__name__,
+                filters,
+            )
+            return []
+
+        self.logger.info(
+            "Get finished. model=%s count=%s.",
+            service.model.__name__,
+            len(objects),
+        )
+        return objects
 
     def update(
         self,
-        target: ServiceTarget,
         filters_or_obj: Payload,
         data: Payload,
-        *,
-        commit: bool | None = None,
     ) -> list[Base] | None:
         """
-        Обновляет найденные объекты или один переданный ORM-объект.
+        Обновляет ORM-объекты.
+
+        :param filters_or_obj: ORM-объект для прямого обновления или фильтр,
+            по которому нужно найти объекты в базе данных.
+        :param data: Данные обновления в виде словаря, Pydantic-схемы или
+            ORM-объекта.
+
+        :return: Список обновленных ORM-объектов. Если фильтр, данные обновления
+            или сохранение отклонены, возвращается `None`.
+
+        :raises OrmServiceError: Если фасад не может определить сервис для
+            операции обновления.
         """
-        service = self.service(target)
-        if service is None:
-            return None
+        self.logger.info(
+            "Update started. target_type=%s payload_type=%s.",
+            type(filters_or_obj).__name__,
+            type(data).__name__,
+        )
+
+        service = self._resolve_update_service(filters_or_obj, data)
 
         if isinstance(filters_or_obj, service.model):
             objects = [filters_or_obj]
+            self.logger.debug(
+                "Update target resolved as ORM object. model=%s.",
+                service.model.__name__,
+            )
         else:
-            objects = self.get_many(service, filters_or_obj)
-            if objects is None:
+            selected = self._select_objects(service, filters_or_obj)
+            if selected is None:
                 return None
+            objects = selected
 
         updated_objects = []
+
         for db_obj in objects:
             updated = service.apply_update(db_obj, data)
             if updated is None:
                 self.logger.warning(
-                    "Update payload rejected by %s.",
+                    "Update rejected. service=%s payload=%r.",
                     service.__class__.__name__,
+                    data,
                 )
                 return None
             updated_objects.append(updated)
 
-        if not self._finish_write("update", commit):
+        if not self._save("update"):
             return None
 
         self.logger.info(
-            "Updated %s %s objects.",
-            len(updated_objects),
+            "Update finished. model=%s count=%s.",
             service.model.__name__,
+            len(updated_objects),
         )
         return updated_objects
 
-    def update_one(
-        self,
-        target: ServiceTarget,
-        filters_or_obj: Payload,
-        data: Payload,
-        *,
-        commit: bool | None = None,
-    ) -> Base | None:
+    def delete(self, filters: Payload) -> int | None:
         """
-        Обновляет первый найденный объект.
-        """
-        updated = self.update(target, filters_or_obj, data, commit=commit)
-        if not updated:
-            return None
+        Удаляет ORM-объекты по фильтру или переданному объекту.
 
-        return updated[0]
+        :param filters: Фильтр удаления в виде словаря, Pydantic-схемы или
+            ORM-объекта. Если передан persistent ORM-объект, он удаляется
+            через `session.delete`.
 
-    def delete(
-        self,
-        target: ServiceTarget,
-        filters: Payload,
-        *,
-        commit: bool | None = None,
-    ) -> int | None:
-        """
-        Удаляет объекты по фильтру и возвращает количество затронутых строк.
-        """
-        service = self.service(target)
-        if service is None:
-            return None
+        :return: Количество удаленных записей. Если фильтр отклонен или операция
+            удаления завершилась ошибкой, возвращается `None`.
 
-        stmt = service.build_delete(filters)
+        :raises OrmServiceError: Если фасад не может определить сервис по фильтру.
+        """
+        self.logger.info(
+            "Delete started. payload_type=%s.",
+            type(filters).__name__,
+        )
+
+        service = self._resolve_service(filters, "delete")
+
+        if (
+            isinstance(filters, service.model)
+            and sa_inspect(filters).persistent
+        ):
+            try:
+                self.session.delete(filters)
+            except SQLAlchemyError:
+                self.rollback()
+                self.logger.exception(
+                    "Delete failed while marking object. model=%s.",
+                    service.model.__name__,
+                )
+                return None
+
+            if not self._save("delete"):
+                return None
+
+            self.logger.info(
+                "Delete finished. model=%s count=1.",
+                service.model.__name__,
+            )
+            return 1
+
+        filter_data = self._filter_data(filters)
+        stmt = service.build_delete(filter_data)
+
         if stmt is None:
             self.logger.warning(
-                "Delete payload rejected by %s.",
+                "Delete rejected. service=%s filters=%r.",
                 service.__class__.__name__,
+                filters,
             )
             return None
 
         try:
             result = self.session.execute(stmt)
-            if not self._finish_write("delete", commit):
-                return None
-            rowcount = int(result.rowcount or 0)
-            self.logger.info(
-                "Deleted %s %s objects.",
-                rowcount,
-                service.model.__name__,
-            )
-            return rowcount
         except SQLAlchemyError:
             self.rollback()
-            self.logger.exception("OrmService delete failed for %s.", service.model.__name__)
+            self.logger.exception(
+                "Delete failed. service=%s filters=%r.",
+                service.__class__.__name__,
+                filters,
+            )
             return None
+
+        if not self._save("delete"):
+            return None
+
+        rowcount = int(result.rowcount or 0)
+        self.logger.info(
+            "Delete finished. model=%s count=%s.",
+            service.model.__name__,
+            rowcount,
+        )
+        return rowcount
+
+    def commit(self) -> bool:
+        """
+        Подтверждает текущую транзакцию SQLAlchemy-сессии.
+
+        :return: `True`, если транзакция успешно подтверждена. `False`, если
+            SQLAlchemy вернула ошибку и был выполнен rollback.
+        """
+        self.logger.info("Commit started.")
+
+        try:
+            self.session.commit()
+        except SQLAlchemyError:
+            self.rollback()
+            self.logger.exception("Commit failed.")
+            return False
+
+        self.logger.info("Commit finished.")
+        return True
+
+    def rollback(self) -> None:
+        """
+        Откатывает текущую транзакцию SQLAlchemy-сессии.
+
+        :return: `None`. Метод меняет состояние сессии, но не возвращает значение.
+        """
+        self.logger.info("Rollback started.")
+        self.session.rollback()
+        self.logger.info("Rollback finished.")
+
+    def close(self) -> None:
+        """
+        Закрывает текущую SQLAlchemy-сессию.
+
+        :return: `None`. После закрытия сессии экземпляр фасада не должен
+            использоваться для новых операций с базой данных.
+        """
+        self.logger.info("Close started.")
+        self.session.close()
+        self.logger.info("Close finished.")

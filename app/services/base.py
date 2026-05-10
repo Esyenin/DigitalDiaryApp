@@ -1,15 +1,9 @@
 """
-������ �������� �������.
+Базовый сервис для одной SQLAlchemy-модели.
 
-���� �������� ����� BaseService.
-BaseService ������ ����� ��������� � ����� ��������� ��������,
-���������� � ����� SQLAlchemy-�������.
-
-��������� �������� ������ ������� �� �������:
-- `create_instance`;
-- `build_select`;
-- `apply_update`;
-- `build_delete`.
+Модуль содержит общий слой подготовки ORM-объектов и SQLAlchemy-запросов.
+Он не выполняет запросы к базе данных, не открывает сессии и не управляет
+транзакциями. Эти обязанности остаются на более высоком уровне приложения.
 """
 import logging
 from typing import Generic, Mapping, TypeVar
@@ -27,18 +21,12 @@ logger = logging.getLogger(__name__)
 
 class BaseService(Generic[ModelT]):
     """
-    ������� ������ ��� ����� ORM-������.
+    Общая логика сервиса для одной ORM-модели.
 
-    ��������� ������:
-    - `model` - ORM-������ �������;
-    - `create_schema` - ����� ��������� ��� `create_instance`;
-    - `select_schema` - ����� ��������� ��� `build_select`;
-    - `update_schema` - ����� ��������� ��� `apply_update`;
-    - `delete_schema` - ����� ��������� ��� `build_delete`;
-    - `schema_fields` - ���� ������, ����������� ��� ���������� �� ORM-�������.
-
-    ����� �� ��������� SQL-�������, �� �������� � ������� ���� ������
-    � �� ��������� ������������.
+    Класс связывает конкретную SQLAlchemy-модель с наборами Pydantic-схем
+    для создания, чтения, обновления и удаления. Наследники задают модель
+    и нужные схемы, а базовый класс выполняет преобразование входных данных,
+    валидацию и построение ORM-объектов или SQLAlchemy-выражений.
     """
 
     model: type[ModelT]
@@ -54,7 +42,14 @@ class BaseService(Generic[ModelT]):
         obj: ModelT,
     ) -> dict[str, object]:
         """
-        ��������� ������ �� ORM-�������.
+        Извлекает публичные данные из ORM-объекта.
+
+        :param obj: ORM-объект той модели, с которой работает сервис.
+
+        :return: Словарь с полями объекта. Служебные атрибуты SQLAlchemy,
+            начинающиеся с подчеркивания, в результат не попадают.
+            Если `schema_fields` задан, возвращаются только поля из этого
+            набора.
         """
         data = {
             key: value
@@ -76,7 +71,14 @@ class BaseService(Generic[ModelT]):
         obj: BaseModel | ModelT | Mapping[str, object] | None,
     ) -> dict[str, object] | None:
         """
-        �������� ������� ������ � �������.
+        Приводит входные данные к словарю.
+
+        :param obj: Данные в виде Pydantic-схемы, ORM-объекта, mapping-объекта
+            или `None`.
+
+        :return: Словарь с данными, которые можно передать в схему или модель.
+            Для Pydantic-схем учитываются только явно переданные поля.
+            Если на вход пришел `None`, возвращается `None`.
         """
         if obj is None:
             return None
@@ -95,7 +97,15 @@ class BaseService(Generic[ModelT]):
         data: dict[str, object] | None,
     ) -> BaseModel | dict[str, object] | None:
         """
-        ���������� ������� ����� ���������� �����.
+        Проверяет словарь через указанную Pydantic-схему.
+
+        :param schema_class: Класс схемы, через которую нужно проверить данные.
+            Если схема не задана, данные считаются уже допустимыми.
+        :param data: Словарь данных для проверки или `None`.
+
+        :return: Экземпляр Pydantic-схемы после успешной проверки, исходный
+            словарь при отсутствии схемы или `None`, если данных нет либо
+            валидация завершилась ошибкой.
         """
         if data is None:
             return None
@@ -118,7 +128,12 @@ class BaseService(Generic[ModelT]):
         validated: BaseModel | dict[str, object],
     ) -> dict[str, object]:
         """
-        ����������� ��������� ��������� � �������.
+        Преобразует проверенные данные обратно в словарь.
+
+        :param validated: Экземпляр Pydantic-схемы или уже готовый словарь.
+
+        :return: Словарь с проверенными значениями. Для Pydantic-схем сохраняются
+            только явно переданные поля.
         """
         if isinstance(validated, BaseModel):
             return validated.model_dump(exclude_unset=True)
@@ -130,7 +145,13 @@ class BaseService(Generic[ModelT]):
         data: BaseModel | ModelT | Mapping[str, object],
     ) -> ModelT | None:
         """
-        �������������� ORM-������ ��� ��������.
+        Подготавливает ORM-объект для создания записи.
+
+        :param data: Данные создаваемой записи в виде словаря, Pydantic-схемы
+            или уже созданного ORM-объекта нужной модели.
+
+        :return: ORM-объект, готовый к добавлению в SQLAlchemy-сессию. Если входные
+            данные не проходят схему создания, возвращается `None`.
         """
         raw_data = self._extract_data(data)
         validated = self._validate(self.create_schema, raw_data)
@@ -147,7 +168,13 @@ class BaseService(Generic[ModelT]):
         filters: ModelT | Mapping[str, object] | BaseModel | None = None,
     ) -> Select | None:
         """
-        ������ Select-��������� ��� ������.
+        Строит SQLAlchemy Select-запрос для модели сервиса.
+
+        :param filters: Фильтр поиска в виде ORM-объекта, словаря, Pydantic-схемы
+            или `None`. При `None` строится запрос без условий.
+
+        :return: SQLAlchemy Select-выражение. Если фильтр не проходит схему чтения,
+            возвращается `None`.
         """
         stmt = select(self.model)
         if filters is None:
@@ -170,7 +197,16 @@ class BaseService(Generic[ModelT]):
         data: ModelT | Mapping[str, object] | BaseModel,
     ) -> ModelT | None:
         """
-        ��������� ��������� � ������������� ORM-�������.
+        Применяет данные обновления к существующему ORM-объекту.
+
+        :param db_obj: ORM-объект, который уже относится к модели сервиса.
+        :param data: Новые значения в виде ORM-объекта, словаря или
+            Pydantic-схемы обновления.
+
+        :return: Тот же ORM-объект после применения допустимых изменений. Поля,
+            перечисленные в `update_lookup_fields`, не изменяются. Если объект
+            относится к другой модели или данные не проходят схему обновления,
+            возвращается `None`.
         """
         if not isinstance(db_obj, self.model):
             return None
@@ -192,7 +228,13 @@ class BaseService(Generic[ModelT]):
         filters: ModelT | Mapping[str, object] | BaseModel | None,
     ) -> Delete | None:
         """
-        ������ Delete-��������� ��� ������.
+        Строит SQLAlchemy Delete-запрос для модели сервиса.
+
+        :param filters: Фильтр удаления в виде ORM-объекта, словаря,
+            Pydantic-схемы или `None`.
+
+        :return: SQLAlchemy Delete-выражение с условиями из фильтра. Если фильтр
+            не проходит схему удаления, возвращается `None`.
         """
         raw_data = self._extract_data(filters)
         validated = self._validate(self.delete_schema, raw_data)
@@ -203,13 +245,16 @@ class BaseService(Generic[ModelT]):
             **self._dump_validated_data(validated)
         )
 
-    # ������������� �� ������ API ��������.
     def create(
         self,
         data: BaseModel | ModelT | Mapping[str, object],
     ) -> ModelT | None:
         """
-        ����������� alias ��� create_instance.
+        Совместимый короткий вызов для `create_instance`.
+
+        :param data: Данные создаваемой записи.
+
+        :return: ORM-объект для создания записи или `None`, если данные отклонены.
         """
         return self.create_instance(data)
 
@@ -218,7 +263,11 @@ class BaseService(Generic[ModelT]):
         filters: ModelT | Mapping[str, object] | BaseModel | None = None,
     ) -> Select | None:
         """
-        ����������� alias ��� build_select.
+        Совместимый короткий вызов для `build_select`.
+
+        :param filters: Фильтр поиска или `None`.
+
+        :return: SQLAlchemy Select-выражение или `None`, если фильтр отклонен.
         """
         return self.build_select(filters)
 
@@ -228,7 +277,12 @@ class BaseService(Generic[ModelT]):
         data: ModelT | Mapping[str, object] | BaseModel,
     ) -> ModelT | None:
         """
-        ����������� alias ��� apply_update.
+        Совместимый короткий вызов для `apply_update`.
+
+        :param db_obj: ORM-объект, который нужно изменить.
+        :param data: Данные обновления.
+
+        :return: Измененный ORM-объект или `None`, если обновление отклонено.
         """
         return self.apply_update(db_obj, data)
 
@@ -237,6 +291,10 @@ class BaseService(Generic[ModelT]):
         filters: ModelT | Mapping[str, object] | BaseModel | None,
     ) -> Delete | None:
         """
-        ����������� alias ��� build_delete.
+        Совместимый короткий вызов для `build_delete`.
+
+        :param filters: Фильтр удаления.
+
+        :return: SQLAlchemy Delete-выражение или `None`, если фильтр отклонен.
         """
         return self.build_delete(filters)

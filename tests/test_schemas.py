@@ -2006,7 +2006,7 @@ SCHEMA_CASES_BY_ENTITY: dict[str, EntitySchemaCase] = {
 }
 
 
-def schema_params(operation_name: str, payload_kind: str) -> list[pytest.ParameterSet]:
+def schema_params(operation_name: str, payload_kind: str) -> list[Any]:
     """
     Собирает параметры теста из общего реестра схем.
     """

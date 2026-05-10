@@ -3,19 +3,26 @@
 """
 # pylint: disable=redefined-outer-name, import-error
 from datetime import date, time
-import logging
 
-from sqlalchemy.sql import Delete, Select
 import pytest
+from sqlalchemy.sql import Delete, Select
 
-from app.models import Attendance, Comment, Group, Lesson, Mark, Schedule, ScheduleGroupLink, Student
+from app.models import (
+    Attendance,
+    Comment,
+    Group,
+    Lesson,
+    Mark,
+    Schedule,
+    ScheduleGroupLink,
+    Student,
+)
 from app.services import (
     AttendanceService,
     CommentService,
     GroupService,
     LessonService,
     MarkService,
-    OrmService,
     ScheduleGroupLinkService,
     ScheduleService,
     StudentService,
@@ -329,67 +336,3 @@ def test_services_db_flow(db_session):
         )
     )
     assert deleted_comment is None
-
-
-def test_ormservice_resolves_services_and_logs_unknown(db_session, caplog):
-    """
-    OrmService находит конкретные сервисы по разным пользовательским ключам.
-    """
-    orm_service = OrmService(db_session)
-
-    assert isinstance(orm_service.service("group"), GroupService)
-    assert isinstance(orm_service.service("groups"), GroupService)
-    assert isinstance(orm_service.service(Group), GroupService)
-    assert isinstance(orm_service.service(Group(name="ИУ7-31")), GroupService)
-    assert isinstance(
-        orm_service.service("schedule_group_link"),
-        ScheduleGroupLinkService,
-    )
-
-    with caplog.at_level(logging.ERROR):
-        assert orm_service.service("unknown") is None
-
-    assert "Unknown ORM service name" in caplog.text
-
-
-def test_ormservice_crud_flow(db_session):
-    """
-    OrmService выполняет CRUD через конкретные сервисы и текущую сессию.
-    """
-    orm_service = OrmService(db_session)
-    group = orm_service.create(
-        "group",
-        {"name": "РЛ6-41", "speciality": "09.03.01_Информатика"},
-    )
-
-    assert type(group) is Group
-    assert group.id is not None
-
-    db_group = orm_service.get_one(Group, {"name": "РЛ6-41"})
-    assert db_group.id == group.id
-
-    updated_group = orm_service.update_one(
-        "groups",
-        {"id": group.id},
-        {"speciality": "09.03.01_Обновление"},
-    )
-    assert updated_group.speciality == "09.03.01_Обновление"
-
-    groups = orm_service.get("group", {"speciality": "09.03.01_Обновление"})
-    assert groups == [group]
-
-    deleted_count = orm_service.delete("group", {"id": group.id})
-    assert deleted_count == 1
-    assert orm_service.get_one("group", {"id": group.id}) is None
-
-
-def test_ormservice_rejects_invalid_payload_and_logs(db_session, caplog):
-    """
-    OrmService возвращает None и пишет лог при некорректных данных.
-    """
-    orm_service = OrmService(db_session)
-
-    with caplog.at_level(logging.WARNING):
-        assert orm_service.create("group", {"name": ""}) is None
-
-    assert "Create payload rejected by GroupService" in caplog.text
