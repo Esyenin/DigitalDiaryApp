@@ -6,11 +6,32 @@ import logging
 from pathlib import Path
 
 import pytest
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from pydantic import BaseModel
 
-from app.io_tools import ImportExportService, XlsxExporter, XlsxImporter
-from app.io_tools.xlsx_config import XLSX_COLUMNS_BY_SHEET, XLSX_SHEETS_ORDER
+from app.io_tools import (
+    DataNormalizer,
+    DataProcessingResult,
+    DataProcessor,
+    DataResolver,
+    ExtractedTable,
+    HeaderBinding,
+    ImportExportService,
+    ImportProcessor,
+    RawWorkbookReader,
+    ProcessedRow,
+    StrictImportProcessor,
+    TableRegion,
+    XlsxExporter,
+    XlsxImporter,
+    XlsxRangeReader,
+)
+from app.io_tools.xlsx_config import (
+    SMART_IMPORT_ENTITY_TYPES,
+    STRICT_IMPORT_ENTITY_TYPES,
+    XLSX_COLUMNS_BY_SHEET,
+    XLSX_SHEETS_ORDER,
+)
 from app.models import (
     Attendance,
     Comment,
@@ -298,6 +319,805 @@ def test_import_export_service_delegates_export_and_import(tmp_path):
 
     assert exported_path == file_path
     assert imported["groups"][0]["name"] == "IU7-11"
+
+
+def test_xlsx_importer_finds_table_candidates_outside_a1(tmp_path):
+    """
+    Поиск нестандартных таблиц находит таблицу, даже если она начинается не в A1.
+    """
+    importer = XlsxImporter()
+    file_path = tmp_path / "offset_table.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Students"
+    worksheet["A1"] = "Список студентов"
+    worksheet["C4"] = "surname"
+    worksheet["D4"] = "first_name"
+    worksheet["E4"] = "group_id"
+    worksheet["C5"] = "Иванов"
+    worksheet["D5"] = "Иван"
+    worksheet["E5"] = 1
+    worksheet["C6"] = "Петров"
+    worksheet["D6"] = "Петр"
+    worksheet["E6"] = 1
+    workbook.save(file_path)
+
+    tables = importer.find_table_candidates(file_path)
+
+    assert len(tables) == 1
+    assert tables[0].sheet == "Students"
+    assert tables[0].range == "C4:E6"
+    assert tables[0].rows == 3
+    assert tables[0].cols == 3
+
+
+def test_xlsx_importer_reads_selected_range_and_keeps_extra_columns(tmp_path):
+    """
+    Чтение диапазона сохраняет лишние колонки и отдельно сообщает о них.
+    """
+    importer = XlsxImporter()
+    file_path = tmp_path / "selected_range.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Sheet1"
+    worksheet["B3"] = "surname"
+    worksheet["C3"] = "first_name"
+    worksheet["D3"] = "group_id"
+    worksheet["E3"] = "Комментарий"
+    worksheet["B4"] = "Иванов"
+    worksheet["C4"] = "Иван"
+    worksheet["D4"] = 1
+    worksheet["E4"] = "Староста"
+    workbook.save(file_path)
+
+    table = importer.read_table_range(
+        file_path,
+        "Sheet1",
+        "B3:E4",
+        entity_type="student",
+    )
+
+    assert table.entity_type == "students"
+    assert table.headers == ("surname", "first_name", "group_id", "Комментарий")
+    assert table.known_headers == ("surname", "first_name", "group_id")
+    assert table.unknown_headers == ("Комментарий",)
+    assert table.missing_required_headers == ()
+    assert table.rows == [
+        {
+            "surname": "Иванов",
+            "first_name": "Иван",
+            "group_id": 1,
+            "Комментарий": "Староста",
+        }
+    ]
+    assert table.errors == []
+    assert table.is_valid is True
+
+
+def test_xlsx_importer_reports_missing_required_headers_for_selected_range(tmp_path):
+    """
+    Чтение диапазона сообщает о пропущенных обязательных колонках выбранной сущности.
+    """
+    importer = XlsxImporter()
+    file_path = tmp_path / "bad_range.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Sheet1"
+    worksheet["D5"] = "surname"
+    worksheet["E5"] = "Комментарий"
+    worksheet["D6"] = "Иванов"
+    worksheet["E6"] = "Нет имени"
+    workbook.save(file_path)
+
+    table = importer.read_table_range(
+        file_path,
+        "Sheet1",
+        "D5:E6",
+        entity_type="student",
+    )
+
+    assert table.entity_type == "students"
+    assert table.missing_required_headers == ("group_id", "first_name")
+    assert table.errors == ["Missing required headers: group_id, first_name."]
+    assert table.is_valid is False
+
+
+def test_raw_workbook_reader_normalizes_empty_like_values():
+    """
+    Низкоуровневый reader одинаково трактует пустые значения разных видов.
+    """
+    assert RawWorkbookReader.normalize_cell_value(None) is None
+    assert RawWorkbookReader.normalize_cell_value("   ") is None
+    assert RawWorkbookReader.normalize_cell_value(" text ") == "text"
+    assert RawWorkbookReader.normalize_cell_value(0) == 0
+    assert RawWorkbookReader.is_non_empty(" value ") is True
+    assert RawWorkbookReader.is_non_empty("") is False
+
+
+def test_xlsx_range_reader_reports_generated_and_duplicated_headers(tmp_path):
+    """
+    Reader сообщает о пустых и дублирующихся заголовках, а строки при этом не теряются.
+    """
+    reader = XlsxRangeReader()
+    file_path = tmp_path / "duplicate_headers.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Sheet1"
+    worksheet["C3"] = "surname"
+    worksheet["D3"] = None
+    worksheet["E3"] = "surname"
+    worksheet["C4"] = "Иванов"
+    worksheet["D4"] = "заметка"
+    worksheet["E4"] = "Петров"
+    workbook.save(file_path)
+
+    table = reader.read_range(file_path, "Sheet1", "C3:E4")
+
+    assert table.headers == ("surname", "__column_2", "surname__3")
+    assert table.rows == [
+        {
+            "surname": "Иванов",
+            "__column_2": "заметка",
+            "surname__3": "Петров",
+        }
+    ]
+    assert table.warnings == [
+        "Empty header in column 2 was replaced with __column_2.",
+        "Duplicate header was renamed to surname__3.",
+        "Header surname appeared more than once in the selected range.",
+    ]
+    assert table.errors == []
+
+
+def test_xlsx_range_reader_reports_missing_data_rows(tmp_path):
+    """
+    Если в выбранном диапазоне есть только заголовки, reader возвращает явную ошибку.
+    """
+    reader = XlsxRangeReader()
+    file_path = tmp_path / "headers_only.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Sheet1"
+    worksheet["B2"] = "surname"
+    worksheet["C2"] = "first_name"
+    worksheet["D2"] = "group_id"
+    workbook.save(file_path)
+
+    table = reader.read_range(
+        file_path,
+        "Sheet1",
+        "B2:D2",
+        entity_type="student",
+    )
+
+    assert table.headers == ("surname", "first_name", "group_id")
+    assert table.rows == []
+    assert table.errors == ["Selected range does not contain data rows."]
+    assert table.is_valid is False
+
+
+def test_xlsx_importer_reads_detected_table_region(tmp_path):
+    """
+    Импортер умеет читать уже найденный диапазон через объект TableRegion.
+    """
+    importer = XlsxImporter()
+    file_path = tmp_path / "detected_table.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Sheet1"
+    worksheet["F6"] = "surname"
+    worksheet["G6"] = "first_name"
+    worksheet["H6"] = "group_id"
+    worksheet["F7"] = "Иванов"
+    worksheet["G7"] = "Иван"
+    worksheet["H7"] = 3
+    workbook.save(file_path)
+
+    table_region = TableRegion(
+        sheet="Sheet1",
+        range="F6:H7",
+        min_row=6,
+        max_row=7,
+        min_col=6,
+        max_col=8,
+        rows=2,
+        cols=3,
+        total_cells=6,
+        non_empty_cells=6,
+        density=1.0,
+        score=0.9,
+    )
+
+    table = importer.read_detected_table(
+        file_path,
+        table_region,
+        entity_type="student",
+    )
+
+    assert table.entity_type == "students"
+    assert table.rows == [
+        {"surname": "Иванов", "first_name": "Иван", "group_id": 3}
+    ]
+    assert table.errors == []
+
+
+def test_smart_reader_detects_and_reads_real_nonstandard_tables():
+    """
+    Нестандартный XLSX-файл из `logs` корректно разбирается на три таблицы.
+
+    Тест проверяет реальный сценарий умного чтения:
+    - в книге есть мусор вокруг таблиц;
+    - таблицы начинаются не из `A1`;
+    - заголовки не совпадают с внутренним форматом приложения;
+    - сами строки при этом все равно должны быть прочитаны без потери данных.
+    """
+    service = ImportExportService()
+    file_path = _logs_dir() / "test_io_tools_smart_reader.xlsx"
+    if not file_path.exists():
+        pytest.skip(f"Тестовый XLSX-файл не найден: {file_path}")
+
+    tables = service.find_xlsx_tables(file_path)
+
+    assert [(table.sheet, table.range) for table in tables] == [
+        ("Лист1", "C3:D10"),
+        ("Лист1", "L12:O16"),
+        ("Лист2", "C5:D11"),
+    ]
+
+    first_groups = service.read_xlsx_table_range(
+        file_path,
+        "Лист1",
+        "C3:D10",
+        entity_type="group",
+    )
+    students = service.read_xlsx_table_range(
+        file_path,
+        "Лист1",
+        "L12:O16",
+        entity_type="student",
+    )
+    second_groups = service.read_xlsx_table_range(
+        file_path,
+        "Лист2",
+        "C5:D11",
+        entity_type="group",
+    )
+
+    assert first_groups.headers == ("Группы", "Специальности")
+    assert first_groups.rows == [
+        {"Группы": "СМ1-21Б", "Специальности": 123},
+        {"Группы": "СМ2-51Б", "Специальности": None},
+        {"Группы": "СМ3-21", "Специальности": 288},
+        {"Группы": "СМ4-41", "Специальности": 335},
+        {"Группы": "СМ5-21Б", "Специальности": None},
+        {"Группы": "СМ6-21Б", "Специальности": 433},
+        {"Группы": "СМ7-31Б", "Специальности": 488},
+    ]
+    assert first_groups.errors == ["Missing required headers: name."]
+    assert first_groups.is_valid is False
+
+    assert students.headers == ("Фамилия", "Имя", "Группа", "Почта")
+    assert students.rows == [
+        {
+            "Фамилия": "Иванов",
+            "Имя": "Иван",
+            "Группа": "СМ1-21Б",
+            "Почта": "a@test.ru",
+        },
+        {
+            "Фамилия": "Петров",
+            "Имя": "Петр",
+            "Группа": "СМ6-21Б",
+            "Почта": None,
+        },
+        {
+            "Фамилия": "Сидоров",
+            "Имя": "Сидор",
+            "Группа": "СМ4-41",
+            "Почта": "v@test.ru",
+        },
+        {
+            "Фамилия": "Горшенев",
+            "Имя": "Миша",
+            "Группа": "СМ7-31Б",
+            "Почта": "e@test.ru",
+        },
+    ]
+    assert students.errors == [
+        "Missing required headers: group_id, surname, first_name."
+    ]
+    assert students.is_valid is False
+
+    assert second_groups.headers == ("Группы", "Специальности")
+    assert second_groups.rows == [
+        {"Группы": "ИУ1-21Б", "Специальности": 123},
+        {"Группы": "ИУ2-51Б", "Специальности": None},
+        {"Группы": "ИУ3-21", "Специальности": 184},
+        {"Группы": "ИУ5-21Б", "Специальности": 297},
+        {"Группы": "ИУ6-21Б", "Специальности": 340},
+    ]
+    assert second_groups.errors == ["Missing required headers: name."]
+    assert second_groups.is_valid is False
+
+
+def test_data_normalizer_maps_student_row_and_separates_group_reference():
+    """
+    Нормализатор раскладывает строку студента на прямые поля и ссылку на группу.
+    """
+    normalizer = DataNormalizer()
+    extracted_table = ExtractedTable(
+        sheet="Лист1",
+        range="L12:O16",
+        entity_type="students",
+        headers=("Фамилия", "Имя", "Группа", "Почта", "Лишнее"),
+        rows=[
+            {
+                "Фамилия": "Иванов",
+                "Имя": "Иван",
+                "Группа": "СМ1-21Б",
+                "Почта": "a@test.ru",
+                "Лишнее": "заметка",
+            }
+        ],
+    )
+
+    normalized_rows = normalizer.normalize_table(extracted_table)
+
+    assert len(normalized_rows) == 1
+    assert normalized_rows[0].data == {
+        "surname": "Иванов",
+        "first_name": "Иван",
+        "bmstu_email": "a@test.ru",
+    }
+    assert normalized_rows[0].references == {"group": {"name": "СМ1-21Б"}}
+    assert normalized_rows[0].unmapped == {"Лишнее": "заметка"}
+    assert normalized_rows[0].errors == []
+
+
+def test_data_normalizer_warns_about_conflicting_alias_values():
+    """
+    Если две колонки маппятся в одно поле с разными значениями, нормализатор оставляет warning.
+    """
+    normalizer = DataNormalizer()
+
+    normalized_row = normalizer.normalize_row(
+        "students",
+        {
+            "surname": "Иванов",
+            "Фамилия": "Петров",
+            "Имя": "Иван",
+        },
+        source_sheet="Лист1",
+        source_range="A1:C2",
+        source_row_number=2,
+    )
+
+    assert normalized_row.data["surname"] == "Иванов"
+    assert normalized_row.data["first_name"] == "Иван"
+    assert normalized_row.warnings == [
+        "Conflicting values for field surname: 'Иванов' and 'Петров'."
+    ]
+    assert normalized_row.errors == []
+
+
+def test_xlsx_config_separates_smart_and_strict_entity_types():
+    """
+    XLSX-конфиг явно разделяет сущности умного и строгого импорта.
+    """
+    assert SMART_IMPORT_ENTITY_TYPES == ("groups", "schedules", "students")
+    assert STRICT_IMPORT_ENTITY_TYPES == (
+        "schedule_group_links",
+        "lessons",
+        "attendances",
+        "marks",
+        "comments",
+    )
+
+
+def test_data_normalizer_rejects_strict_entity_type():
+    """
+    Нормализатор не должен пытаться обрабатывать сущности строгого импорта.
+    """
+    normalizer = DataNormalizer()
+    extracted_table = ExtractedTable(
+        sheet="Лист1",
+        range="A1:F2",
+        entity_type="attendances",
+        headers=("student_id", "lesson_id", "is_visited"),
+        rows=[{"student_id": 1, "lesson_id": 2, "is_visited": True}],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="is not supported for smart import",
+    ):
+        normalizer.normalize_table(extracted_table)
+
+
+def test_data_resolver_resolves_group_reference_to_group_id():
+    """
+    Резолвер может подставить `group_id`, если нормализатор сохранил ссылку по имени группы.
+    """
+    normalizer = DataNormalizer()
+    extracted_table = ExtractedTable(
+        sheet="Лист1",
+        range="L12:O16",
+        entity_type="students",
+        headers=("Фамилия", "Имя", "Группа"),
+        rows=[{"Фамилия": "Иванов", "Имя": "Иван", "Группа": "СМ1-21Б"}],
+    )
+
+    normalized_row = normalizer.normalize_table(extracted_table)[0]
+    resolver = DataResolver(
+        reference_resolvers={
+            "group": lambda criteria: {"group_id": 15}
+            if criteria == {"name": "СМ1-21Б"}
+            else None
+        }
+    )
+
+    resolved_row = resolver.resolve_rows([normalized_row])[0]
+
+    assert resolved_row.data == {
+        "surname": "Иванов",
+        "first_name": "Иван",
+        "group_id": 15,
+    }
+    assert resolved_row.resolved_references == {"group": {"group_id": 15}}
+    assert resolved_row.unresolved_references == {}
+    assert resolved_row.errors == []
+
+
+def test_data_resolver_keeps_unresolved_reference_when_callback_is_missing():
+    """
+    Если callback для ссылки не настроен, резолвер не падает и помечает ссылку как неразрешенную.
+    """
+    resolver = DataResolver()
+    row = DataNormalizer().normalize_row(
+        "students",
+        {"Фамилия": "Иванов", "Имя": "Иван", "Группа": "СМ1-21Б"},
+        source_sheet="Лист1",
+        source_range="A1:C2",
+        source_row_number=2,
+    )
+
+    resolved_row = resolver.resolve_rows([row])[0]
+
+    assert resolved_row.data == {"surname": "Иванов", "first_name": "Иван"}
+    assert resolved_row.unresolved_references == {"group": {"name": "СМ1-21Б"}}
+    assert resolved_row.warnings == [
+        "No resolver was configured for reference 'group'."
+    ]
+    assert resolved_row.errors == []
+
+
+def test_data_resolver_reports_unresolved_reference_when_callback_returns_none():
+    """
+    Если callback не смог разрешить ссылку, это считается ошибкой строки.
+    """
+    row = DataNormalizer().normalize_row(
+        "students",
+        {"Фамилия": "Иванов", "Имя": "Иван", "Группа": "СМ1-21Б"},
+        source_sheet="Лист1",
+        source_range="A1:C2",
+        source_row_number=2,
+    )
+    resolver = DataResolver(reference_resolvers={"group": lambda criteria: None})
+
+    resolved_row = resolver.resolve_rows([row])[0]
+
+    assert resolved_row.unresolved_references == {"group": {"name": "СМ1-21Б"}}
+    assert resolved_row.errors == [
+        "Could not resolve reference 'group' with criteria {'name': 'СМ1-21Б'}."
+    ]
+    assert resolved_row.is_valid is False
+
+
+def test_import_processor_builds_group_create_payloads():
+    """
+    Процессор собирает итоговые payload-словари, готовые для create-схем.
+    """
+    processor = ImportProcessor()
+    extracted_table = ExtractedTable(
+        sheet="Лист1",
+        range="C3:D5",
+        entity_type="groups",
+        headers=("Группы", "Специальности"),
+        rows=[
+            {"Группы": "СМ1-21Б", "Специальности": "24.03.01_Информатика"},
+            {"Группы": "СМ2-51Б", "Специальности": None},
+        ],
+    )
+
+    result = processor.process_table(extracted_table)
+
+    assert result.entity_type == "groups"
+    assert result.create_payloads == [
+        {"name": "СМ1-21Б", "speciality": "24.03.01_Информатика"},
+        {"name": "СМ2-51Б"},
+    ]
+    assert result.errors == []
+    assert result.is_valid is True
+
+
+def test_import_processor_reports_create_schema_validation_error():
+    """
+    Если после нормализации не хватает обязательных полей create-схемы, процессор возвращает понятную ошибку.
+    """
+    processor = ImportProcessor()
+    extracted_table = ExtractedTable(
+        sheet="Лист1",
+        range="D5:D6",
+        entity_type="groups",
+        headers=("Специальности",),
+        rows=[{"Специальности": "24.03.01_Информатика"}],
+    )
+
+    result = processor.process_table(extracted_table)
+
+    assert result.create_payloads == []
+    assert result.errors == ["row 2: name: Field required"]
+    assert result.is_valid is False
+
+
+def test_data_processor_builds_header_bindings_and_row_trace():
+    """
+    Обработчик данных сохраняет карту заголовков и построчную трассировку распознавания.
+    """
+    processor = DataProcessor(
+        data_resolver=DataResolver(
+            reference_resolvers={"group": lambda criteria: {"group_id": 15}}
+        )
+    )
+    extracted_table = ExtractedTable(
+        sheet="Лист1",
+        range="L12:O16",
+        entity_type="students",
+        headers=("Фамилия", "Имя", "Группа", "Почта", "Лишнее"),
+        rows=[
+            {
+                "Фамилия": "Иванов",
+                "Имя": "Иван",
+                "Группа": "СМ1-21Б",
+                "Почта": "a@test.ru",
+                "Лишнее": "заметка",
+            }
+        ],
+    )
+
+    result = processor.process_table(extracted_table)
+
+    assert result.entity_type == "students"
+    assert result.header_bindings == [
+        HeaderBinding("Фамилия", "фамилия", "direct", "surname"),
+        HeaderBinding("Имя", "имя", "direct", "first_name"),
+        HeaderBinding("Группа", "группа", "reference", "group.name"),
+        HeaderBinding("Почта", "почта", "direct", "bmstu_email"),
+        HeaderBinding("Лишнее", "лишнее", "unmapped", None),
+    ]
+    assert result.create_payloads == [
+        {
+            "surname": "Иванов",
+            "first_name": "Иван",
+            "group_id": 15,
+            "bmstu_email": "a@test.ru",
+        }
+    ]
+    assert result.rows == [
+        ProcessedRow(
+            source_row_number=2,
+            source_values={
+                "Фамилия": "Иванов",
+                "Имя": "Иван",
+                "Группа": "СМ1-21Б",
+                "Почта": "a@test.ru",
+                "Лишнее": "заметка",
+            },
+            normalized_data={
+                "surname": "Иванов",
+                "first_name": "Иван",
+                "bmstu_email": "a@test.ru",
+            },
+            references={"group": {"name": "СМ1-21Б"}},
+            resolved_data={
+                "surname": "Иванов",
+                "first_name": "Иван",
+                "bmstu_email": "a@test.ru",
+                "group_id": 15,
+            },
+            resolved_references={"group": {"group_id": 15}},
+            unresolved_references={},
+            unmapped={"Лишнее": "заметка"},
+            warnings=[],
+            errors=[],
+            create_payload={
+                "surname": "Иванов",
+                "first_name": "Иван",
+                "group_id": 15,
+                "bmstu_email": "a@test.ru",
+            },
+        )
+    ]
+    assert result.errors == []
+    assert result.is_valid is True
+
+
+def test_data_processor_preserves_extracted_table_errors():
+    """
+    Ошибки диапазона верхнего уровня не теряются после обработки данных.
+    """
+    processor = DataProcessor()
+    extracted_table = ExtractedTable(
+        sheet="Лист1",
+        range="D5:E6",
+        entity_type="groups",
+        headers=("Специальности", "Комментарий"),
+        rows=[{"Специальности": "24.03.01_Информатика", "Комментарий": "заметка"}],
+        errors=["Missing required headers: name."],
+        warnings=["Header Комментарий is not recognized."],
+    )
+
+    result = processor.process_table(extracted_table)
+
+    assert result.warnings == ["Header Комментарий is not recognized."]
+    assert result.errors == ["Missing required headers: name.", "row 2: name: Field required"]
+    assert result.create_payloads == []
+    assert result.is_valid is False
+
+
+def test_import_export_service_reads_strict_table_with_standard_headers(tmp_path):
+    """
+    Строгий импорт принимает таблицу из произвольного диапазона, если ее формат стандартный.
+    """
+    service = ImportExportService()
+    file_path = tmp_path / "strict_attendance.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Sheet1"
+    headers = XLSX_COLUMNS_BY_SHEET["attendances"]
+
+    for index, header in enumerate(headers, start=3):
+        worksheet.cell(row=7, column=index, value=header)
+
+    worksheet.cell(row=8, column=3, value=None)
+    worksheet.cell(row=8, column=4, value=11)
+    worksheet.cell(row=8, column=5, value=22)
+    worksheet.cell(row=8, column=6, value=True)
+    worksheet.cell(row=8, column=7, value=None)
+    worksheet.cell(row=8, column=8, value=None)
+    workbook.save(file_path)
+
+    result = service.read_strict_xlsx_table(
+        file_path,
+        "Sheet1",
+        "C7:H8",
+        entity_type="attendance",
+    )
+
+    assert result.entity_type == "attendances"
+    assert result.create_payloads == [
+        {"student_id": 11, "lesson_id": 22, "is_visited": True}
+    ]
+    assert result.errors == []
+    assert result.is_valid is True
+
+
+def test_import_export_service_processes_smart_table_with_recognition_map(tmp_path):
+    """
+    Верхний сервис возвращает не только payload-ы, но и карту распознавания smart-таблицы.
+    """
+    service = ImportExportService()
+    file_path = tmp_path / "smart_processing.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Sheet1"
+    worksheet["C4"] = "Фамилия"
+    worksheet["D4"] = "Имя"
+    worksheet["E4"] = "Группа"
+    worksheet["F4"] = "Почта"
+    worksheet["C5"] = "Иванов"
+    worksheet["D5"] = "Иван"
+    worksheet["E5"] = "СМ1-21Б"
+    worksheet["F5"] = "a@test.ru"
+    workbook.save(file_path)
+
+    result = service.process_smart_xlsx_table(
+        file_path,
+        "Sheet1",
+        "C4:F5",
+        entity_type="student",
+    )
+
+    assert isinstance(result, DataProcessingResult)
+    assert result.entity_type == "students"
+    assert [binding.target_path for binding in result.header_bindings] == [
+        "surname",
+        "first_name",
+        "group.name",
+        "bmstu_email",
+    ]
+    assert result.rows[0].normalized_data == {
+        "surname": "Иванов",
+        "first_name": "Иван",
+        "bmstu_email": "a@test.ru",
+    }
+    assert result.rows[0].references == {"group": {"name": "СМ1-21Б"}}
+    assert result.create_payloads == []
+    assert result.warnings == [
+        "No resolver was configured for reference 'group'."
+    ]
+    assert result.errors == [
+        "Missing required headers: group_id, surname, first_name.",
+        "row 2: group_id: Field required",
+    ]
+
+
+def test_strict_import_processor_warns_when_header_order_differs(tmp_path):
+    """
+    Строгий импорт допускает перестановку правильных колонок, но оставляет warning.
+    """
+    processor = StrictImportProcessor()
+    extracted_table = ExtractedTable(
+        sheet="Sheet1",
+        range="B2:G3",
+        entity_type="attendances",
+        headers=("lesson_id", "student_id", "is_visited", "id", "created_at", "updated_at"),
+        rows=[
+            {
+                "lesson_id": 7,
+                "student_id": 5,
+                "is_visited": True,
+                "id": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ],
+    )
+
+    result = processor.process_table(extracted_table)
+
+    assert result.create_payloads == [
+        {"student_id": 5, "lesson_id": 7, "is_visited": True}
+    ]
+    assert result.warnings == ["Header order differs from the standard XLSX format."]
+    assert result.errors == []
+    assert result.is_valid is True
+
+
+def test_import_export_service_rejects_strict_table_with_unknown_headers(tmp_path):
+    """
+    Строгий импорт отклоняет таблицу, если в ней есть лишние колонки.
+    """
+    service = ImportExportService()
+    file_path = tmp_path / "strict_bad_comment.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Sheet1"
+    headers = ("student_id", "lesson_id", "data", "Комментарий")
+
+    for index, header in enumerate(headers, start=2):
+        worksheet.cell(row=5, column=index, value=header)
+
+    worksheet.cell(row=6, column=2, value=1)
+    worksheet.cell(row=6, column=3, value=2)
+    worksheet.cell(row=6, column=4, value="text")
+    worksheet.cell(row=6, column=5, value="extra")
+    workbook.save(file_path)
+
+    result = service.read_strict_xlsx_table(
+        file_path,
+        "Sheet1",
+        "B5:E6",
+        entity_type="comment",
+    )
+
+    assert result.entity_type == "comments"
+    assert result.create_payloads == []
+    assert result.errors == [
+        "Missing strict headers: id, created_at, updated_at.",
+        "Unknown strict headers: Комментарий.",
+    ]
+    assert result.is_valid is False
 
 
 def test_io_tools_emit_basic_logs(tmp_path, caplog):

@@ -7,7 +7,11 @@ import logging
 from pathlib import Path
 
 from app.io_tools.xlsx_exporter import ExportPayload, XlsxExporter
-from app.io_tools.xlsx_importer import XlsxImporter
+from app.io_tools.xlsx_importer.data_normalizer import ImportProcessingResult
+from app.io_tools.xlsx_importer.data_processor import DataProcessingResult
+from app.io_tools.xlsx_importer.raw_reader import ExtractedTable, TableRegion
+from app.io_tools.xlsx_importer.strict_import import StrictImportResult
+from app.io_tools.xlsx_importer.xlsx_importer import XlsxImporter
 
 
 logger = logging.getLogger(__name__)
@@ -78,3 +82,201 @@ class ImportExportService:
             file_path,
         )
         return imported_data
+
+    def find_xlsx_tables(
+        self,
+        file_path: str | Path,
+        min_score: float = 0.45,
+    ) -> list[TableRegion]:
+        """
+        Ищет нестандартные таблицы в XLSX-файле.
+
+        :param file_path: Путь к XLSX-файлу.
+        :param min_score: Минимальный балл похожести на таблицу.
+        :return: Список найденных табличных областей.
+        """
+        logger.info(
+            "XLSX table detection requested. source=%s min_score=%s.",
+            file_path,
+            min_score,
+        )
+        tables = self.xlsx_importer.find_table_candidates(
+            file_path,
+            min_score=min_score,
+        )
+        logger.info(
+            "XLSX table detection finished. source=%s tables_count=%s.",
+            file_path,
+            len(tables),
+        )
+        logger.debug("XLSX table detection result. tables=%s.", tables)
+        return tables
+
+    def read_xlsx_table_range(
+        self,
+        file_path: str | Path,
+        sheet_name: str,
+        cell_range: str,
+        *,
+        entity_type: str | None = None,
+    ) -> ExtractedTable:
+        """
+        Читает выбранный диапазон XLSX как отдельную таблицу.
+
+        :param file_path: Путь к XLSX-файлу.
+        :param sheet_name: Имя листа.
+        :param cell_range: Диапазон Excel.
+        :param entity_type: Предполагаемый тип данных.
+        :return: Извлеченная таблица с диагностикой.
+        """
+        logger.info(
+            "XLSX range read requested. source=%s sheet=%s range=%s entity_type=%s.",
+            file_path,
+            sheet_name,
+            cell_range,
+            entity_type,
+        )
+        table = self.xlsx_importer.read_table_range(
+            file_path,
+            sheet_name,
+            cell_range,
+            entity_type=entity_type,
+        )
+        logger.info(
+            "XLSX range read finished. sheet=%s range=%s rows=%s errors=%s.",
+            table.sheet,
+            table.range,
+            len(table.rows),
+            len(table.errors),
+        )
+        if table.warnings:
+            logger.debug(
+                "XLSX range read warnings. sheet=%s range=%s warnings=%s.",
+                table.sheet,
+                table.range,
+                table.warnings,
+            )
+        if table.errors:
+            logger.warning(
+                "XLSX range read returned validation errors. sheet=%s range=%s errors=%s.",
+                table.sheet,
+                table.range,
+                table.errors,
+            )
+        return table
+
+    def read_smart_xlsx_table(
+        self,
+        file_path: str | Path,
+        sheet_name: str,
+        cell_range: str,
+        *,
+        entity_type: str,
+    ) -> ImportProcessingResult:
+        """
+        Читает диапазон XLSX и подготавливает его к умному импорту.
+
+        :param file_path: Путь к XLSX-файлу.
+        :param sheet_name: Имя листа.
+        :param cell_range: Диапазон Excel.
+        :param entity_type: Тип smart-сущности.
+        :return: Результат умной подготовки таблицы.
+        """
+        logger.info(
+            "Smart XLSX read requested. source=%s sheet=%s range=%s entity_type=%s.",
+            file_path,
+            sheet_name,
+            cell_range,
+            entity_type,
+        )
+        result = self.xlsx_importer.read_smart_table(
+            file_path,
+            sheet_name,
+            cell_range,
+            entity_type=entity_type,
+        )
+        logger.info(
+            "Smart XLSX read finished. entity_type=%s payloads=%s errors=%s.",
+            result.entity_type,
+            len(result.create_payloads),
+            len(result.errors),
+        )
+        return result
+
+    def read_strict_xlsx_table(
+        self,
+        file_path: str | Path,
+        sheet_name: str,
+        cell_range: str,
+        *,
+        entity_type: str,
+    ) -> StrictImportResult:
+        """
+        Читает диапазон XLSX и подготавливает его к строгому импорту.
+
+        :param file_path: Путь к XLSX-файлу.
+        :param sheet_name: Имя листа.
+        :param cell_range: Диапазон Excel.
+        :param entity_type: Тип strict-сущности.
+        :return: Результат строгой подготовки таблицы.
+        """
+        logger.info(
+            "Strict XLSX read requested. source=%s sheet=%s range=%s entity_type=%s.",
+            file_path,
+            sheet_name,
+            cell_range,
+            entity_type,
+        )
+        result = self.xlsx_importer.read_strict_table(
+            file_path,
+            sheet_name,
+            cell_range,
+            entity_type=entity_type,
+        )
+        logger.info(
+            "Strict XLSX read finished. entity_type=%s payloads=%s errors=%s.",
+            result.entity_type,
+            len(result.create_payloads),
+            len(result.errors),
+        )
+        return result
+
+    def process_smart_xlsx_table(
+        self,
+        file_path: str | Path,
+        sheet_name: str,
+        cell_range: str,
+        *,
+        entity_type: str,
+    ) -> DataProcessingResult:
+        """
+        Читает диапазон XLSX и возвращает полную картину smart-обработки таблицы.
+
+        :param file_path: Путь к XLSX-файлу.
+        :param sheet_name: Имя листа.
+        :param cell_range: Диапазон Excel.
+        :param entity_type: Тип smart-сущности.
+        :return: Результат обработки с картой распознавания и итоговыми
+            payload-ами.
+        """
+        logger.info(
+            "Smart XLSX processing requested. source=%s sheet=%s range=%s entity_type=%s.",
+            file_path,
+            sheet_name,
+            cell_range,
+            entity_type,
+        )
+        result = self.xlsx_importer.process_smart_table(
+            file_path,
+            sheet_name,
+            cell_range,
+            entity_type=entity_type,
+        )
+        logger.info(
+            "Smart XLSX processing finished. entity_type=%s rows=%s payloads=%s errors=%s.",
+            result.entity_type,
+            len(result.rows),
+            len(result.create_payloads),
+            len(result.errors),
+        )
+        return result

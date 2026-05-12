@@ -16,6 +16,20 @@ XLSX_SHEETS_ORDER = (
 )
 
 
+SMART_IMPORT_ENTITY_TYPES = (
+    "groups",
+    "schedules",
+    "students",
+)
+
+
+STRICT_IMPORT_ENTITY_TYPES = tuple(
+    sheet_name
+    for sheet_name in XLSX_SHEETS_ORDER
+    if sheet_name not in SMART_IMPORT_ENTITY_TYPES
+)
+
+
 XLSX_COLUMNS_BY_SHEET = {
     "groups": (
         "id",
@@ -126,6 +140,26 @@ def get_known_sheet_names() -> tuple[str, ...]:
     :return: Кортеж имен листов.
     """
     return XLSX_SHEETS_ORDER
+
+
+def is_smart_import_entity_type(entity_type: str) -> bool:
+    """
+    Проверяет, поддерживает ли сущность умный импорт.
+
+    :param entity_type: Канонический ключ сущности XLSX.
+    :return: `True`, если сущность поддержана для smart import.
+    """
+    return entity_type in SMART_IMPORT_ENTITY_TYPES
+
+
+def is_strict_import_entity_type(entity_type: str) -> bool:
+    """
+    Проверяет, должна ли сущность импортироваться только в строгом режиме.
+
+    :param entity_type: Канонический ключ сущности XLSX.
+    :return: `True`, если сущность поддержана для strict import.
+    """
+    return entity_type in STRICT_IMPORT_ENTITY_TYPES
 
 
 def normalize_sheet_keys(
