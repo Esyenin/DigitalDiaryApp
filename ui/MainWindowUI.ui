@@ -1,0 +1,547 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1043</width>
+    <height>970</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>MainWindow</string>
+  </property>
+  <widget class="QWidget" name="sourceWidget">
+   <layout class="QVBoxLayout" name="verticalLayout_2">
+    <item>
+     <layout class="QVBoxLayout" name="mainLayout">
+      <item>
+       <layout class="QHBoxLayout" name="mainButtons">
+        <item>
+         <widget class="QPushButton" name="mainButtonSchedule">
+          <property name="text">
+           <string>Schedule</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="mainButtonGroups">
+          <property name="text">
+           <string>Groups</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="mainButtonSettings">
+          <property name="text">
+           <string>Settings</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QStackedWidget" name="mainWidget">
+        <property name="currentIndex">
+         <number>2</number>
+        </property>
+        <widget class="QWidget" name="pageSchedule">
+         <layout class="QVBoxLayout" name="verticalLayout_3">
+          <item>
+           <layout class="QVBoxLayout" name="mainSchedule">
+            <item>
+             <layout class="QHBoxLayout" name="scheduleDate">
+              <item>
+               <layout class="QHBoxLayout" name="scheduleDateButton">
+                <item>
+                 <widget class="QPushButton" name="scheduleDateButtonLeft">
+                  <property name="text">
+                   <string>&lt;</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="scheduleDateButtonToday">
+                  <property name="text">
+                   <string>Today</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="scheduleDateButtonRight">
+                  <property name="text">
+                   <string>&gt;</string>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </item>
+              <item>
+               <layout class="QHBoxLayout" name="scheduleDateLabels">
+                <item>
+                 <layout class="QVBoxLayout" name="scheduleDateLabelsDate">
+                  <item>
+                   <widget class="QLabel" name="scheduleDateLabelsDateLabelWeek">
+                    <property name="text">
+                     <string>Week</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QLabel" name="scheduleDateLabelsDateLabelDate">
+                    <property name="text">
+                     <string>xx/xx/xxxx - xx/xx/xxxx.</string>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </item>
+                <item>
+                 <layout class="QVBoxLayout" name="scheduleDateLabelsOddity">
+                  <item>
+                   <widget class="QLabel" name="scheduleDateLabelsOddityLabel">
+                    <property name="text">
+                     <string>Odd? Week</string>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </item>
+               </layout>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <layout class="QVBoxLayout" name="scheduleLessons">
+              <item>
+               <layout class="QGridLayout" name="scheduleLessonsLesson">
+                <item row="0" column="5">
+                 <widget class="QLabel" name="scheduleLessonsLessonMonday">
+                  <property name="text">
+                   <string>Friday</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="4">
+                 <widget class="QLabel" name="scheduleLessonLabelThursday">
+                  <property name="text">
+                   <string>Thursday</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="7">
+                 <widget class="QLabel" name="scheduleLessonLabelSunday">
+                  <property name="text">
+                   <string>Sunday</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="1">
+                 <widget class="QLabel" name="scheduleLessonLabelMonday">
+                  <property name="text">
+                   <string>Monday</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="2">
+                 <widget class="QLabel" name="scheduleLessonLabelTuesday">
+                  <property name="text">
+                   <string>Tuesday</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="6">
+                 <widget class="QLabel" name="scheduleLessonLabelSaturday">
+                  <property name="text">
+                   <string>Saturday</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="3">
+                 <widget class="QLabel" name="scheduleLessonLabelWednessday">
+                  <property name="text">
+                   <string>Wednessday</string>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </item>
+             </layout>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </widget>
+        <widget class="QWidget" name="pageGroups">
+         <layout class="QVBoxLayout" name="verticalLayout_11">
+          <item>
+           <layout class="QVBoxLayout" name="mainGroups">
+            <item>
+             <layout class="QVBoxLayout" name="groupsTips">
+              <item>
+               <widget class="QLabel" name="groupsTip1">
+                <property name="text">
+                 <string>All Groups</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QLabel" name="groupsTip2">
+                <property name="text">
+                 <string>Click on a group to view detailed information</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <layout class="QFormLayout" name="groupsFreeSpace"/>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </widget>
+        <widget class="QWidget" name="pageSettings">
+         <layout class="QVBoxLayout" name="verticalLayout_12">
+          <item>
+           <layout class="QVBoxLayout" name="mainSettings">
+            <item>
+             <layout class="QVBoxLayout" name="settingsCurrent">
+              <item>
+               <widget class="QLabel" name="settingsCurrentLabelTip1">
+                <property name="text">
+                 <string>Management &amp; Settings</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QLabel" name="settingsCurrentLabelTip2">
+                <property name="text">
+                 <string>Manage schedules, students, groups, and semester settings</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <layout class="QVBoxLayout" name="settingsAlternative">
+            <item>
+             <layout class="QHBoxLayout" name="settingsAlternativeAction">
+              <item>
+               <widget class="QPushButton" name="settingsAlternativeButtonSchedule">
+                <property name="text">
+                 <string>Schedules Template</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="settingsAlternativeButtonGroups">
+                <property name="text">
+                 <string>Groups</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="settingsAlternativeButtonStudents">
+                <property name="text">
+                 <string>Students</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="settingsAlternativeButtonSemester">
+                <property name="text">
+                 <string>Semester Settings</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <widget class="QStackedWidget" name="settingsWidget">
+              <property name="currentIndex">
+               <number>1</number>
+              </property>
+              <widget class="QWidget" name="pageSettingsSchedule">
+               <layout class="QVBoxLayout" name="verticalLayout_15">
+                <item>
+                 <layout class="QVBoxLayout" name="settingsScheduleMain">
+                  <item>
+                   <layout class="QHBoxLayout" name="settingsScheduleChange">
+                    <item>
+                     <layout class="QVBoxLayout" name="settingsScheduleChangeTip">
+                      <item>
+                       <widget class="QLabel" name="settingsScheduleChangeLabelTip1">
+                        <property name="text">
+                         <string>Schedule Templates</string>
+                        </property>
+                       </widget>
+                      </item>
+                     </layout>
+                    </item>
+                    <item>
+                     <layout class="QVBoxLayout" name="settingsScheduleChangeAction">
+                      <item>
+                       <widget class="QPushButton" name="settingsScheduleChangeActionButton">
+                        <property name="text">
+                         <string>Add Schedule Template</string>
+                        </property>
+                       </widget>
+                      </item>
+                     </layout>
+                    </item>
+                   </layout>
+                  </item>
+                  <item>
+                   <layout class="QFormLayout" name="settingsScheduleFreeSpace"/>
+                  </item>
+                 </layout>
+                </item>
+               </layout>
+              </widget>
+              <widget class="QWidget" name="pageSettingsGroups">
+               <layout class="QVBoxLayout" name="verticalLayout_19">
+                <item>
+                 <layout class="QVBoxLayout" name="settingsGroupsMain">
+                  <item>
+                   <layout class="QHBoxLayout" name="settingsGroupsChange">
+                    <item>
+                     <layout class="QVBoxLayout" name="settingsGroupsChangeTip">
+                      <item>
+                       <widget class="QLabel" name="settingsGroupsChangeLabelTip1">
+                        <property name="text">
+                         <string>Groups</string>
+                        </property>
+                       </widget>
+                      </item>
+                     </layout>
+                    </item>
+                    <item>
+                     <layout class="QVBoxLayout" name="settingsGroupsChangeAction">
+                      <item>
+                       <widget class="QPushButton" name="settingsGroupsChangeActionButton">
+                        <property name="text">
+                         <string>Add Group</string>
+                        </property>
+                       </widget>
+                      </item>
+                     </layout>
+                    </item>
+                   </layout>
+                  </item>
+                  <item>
+                   <layout class="QHBoxLayout" name="settingsGroupsFreeSpace"/>
+                  </item>
+                 </layout>
+                </item>
+               </layout>
+              </widget>
+              <widget class="QWidget" name="pageSettingsStudents">
+               <layout class="QVBoxLayout" name="verticalLayout_23">
+                <item>
+                 <layout class="QVBoxLayout" name="settingsStudentsMain">
+                  <item>
+                   <layout class="QHBoxLayout" name="settingsStudentsChange">
+                    <item>
+                     <layout class="QVBoxLayout" name="settingsStudentsChangeTip">
+                      <item>
+                       <widget class="QLabel" name="settingsStudentsChangeLabelTip1">
+                        <property name="text">
+                         <string>Students</string>
+                        </property>
+                       </widget>
+                      </item>
+                     </layout>
+                    </item>
+                    <item>
+                     <layout class="QHBoxLayout" name="settingsStudentsChangeChoose">
+                      <item>
+                       <widget class="QPushButton" name="settingsStudentsChangeChooseButton">
+                        <property name="text">
+                         <string>All Groups</string>
+                        </property>
+                       </widget>
+                      </item>
+                     </layout>
+                    </item>
+                    <item>
+                     <layout class="QVBoxLayout" name="settingsStudentsChangeAction">
+                      <item>
+                       <widget class="QPushButton" name="settingsStudentsChangeActionButton">
+                        <property name="text">
+                         <string>Add Student</string>
+                        </property>
+                       </widget>
+                      </item>
+                     </layout>
+                    </item>
+                   </layout>
+                  </item>
+                  <item>
+                   <layout class="QHBoxLayout" name="settingsStudentsFreeSpace"/>
+                  </item>
+                 </layout>
+                </item>
+               </layout>
+              </widget>
+              <widget class="QWidget" name="pageSettingsSemester">
+               <layout class="QVBoxLayout" name="verticalLayout_27">
+                <item>
+                 <layout class="QVBoxLayout" name="SettingsSemesterMain" stretch="1,5,1">
+                  <item>
+                   <layout class="QVBoxLayout" name="settingsSemesterTip1">
+                    <item>
+                     <widget class="QLabel" name="settingsSemesterTip1Label">
+                      <property name="text">
+                       <string>Semester Settings</string>
+                      </property>
+                     </widget>
+                    </item>
+                   </layout>
+                  </item>
+                  <item>
+                   <layout class="QVBoxLayout" name="settingsSemesterAction" stretch="2,2,1">
+                    <item>
+                     <layout class="QVBoxLayout" name="settingsSemesterActionDate" stretch="1,1,1">
+                      <item>
+                       <widget class="QLabel" name="settingsSemesterActionDateLabelTip1">
+                        <property name="text">
+                         <string>Semester Start Date (First Monday)</string>
+                        </property>
+                       </widget>
+                      </item>
+                      <item>
+                       <widget class="QTextEdit" name="settingsSemesterActionDateTextBox"/>
+                      </item>
+                      <item>
+                       <widget class="QLabel" name="settingsSemesterActionDateLabelTip2">
+                        <property name="text">
+                         <string>Select the first Monday of the semester. This will be Week 1.</string>
+                        </property>
+                       </widget>
+                      </item>
+                     </layout>
+                    </item>
+                    <item>
+                     <layout class="QVBoxLayout" name="settingsSemesterActionWeek" stretch="1,1,1">
+                      <item>
+                       <widget class="QLabel" name="settingsSemesterActionLabelTip1">
+                        <property name="text">
+                         <string>Total Weeks in Semester</string>
+                        </property>
+                       </widget>
+                      </item>
+                      <item>
+                       <widget class="QTextEdit" name="settingsSemesterActionTextBox"/>
+                      </item>
+                      <item>
+                       <widget class="QLabel" name="settingsSemesterActionLabelTip2">
+                        <property name="text">
+                         <string>Default is 17 weeks. The schedule will only show weeks within this range.</string>
+                        </property>
+                       </widget>
+                      </item>
+                     </layout>
+                    </item>
+                    <item>
+                     <layout class="QVBoxLayout" name="settingsSemesterActionSave">
+                      <item>
+                       <widget class="QPushButton" name="settingsSemesterActionSaveButton">
+                        <property name="text">
+                         <string>Save settings</string>
+                        </property>
+                       </widget>
+                      </item>
+                     </layout>
+                    </item>
+                   </layout>
+                  </item>
+                  <item>
+                   <layout class="QVBoxLayout" name="settingsSemesterTip2">
+                    <item>
+                     <widget class="QLabel" name="settingsSemesterTip2Label">
+                      <property name="text">
+                       <string>Current Semester Information
+
+Start Date: Monday, February 2, 2026
+
+End Date: Sunday, May 31, 2026
+
+Total Weeks: 17</string>
+                      </property>
+                     </widget>
+                    </item>
+                   </layout>
+                  </item>
+                 </layout>
+                </item>
+               </layout>
+              </widget>
+             </widget>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </widget>
+       </widget>
+      </item>
+     </layout>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1043</width>
+     <height>33</height>
+    </rect>
+   </property>
+   <widget class="QMenu" name="menu">
+    <property name="title">
+     <string>Настройки</string>
+    </property>
+    <addaction name="action"/>
+    <addaction name="separator"/>
+    <addaction name="action_3"/>
+    <addaction name="action_4"/>
+    <addaction name="action_5"/>
+    <addaction name="action_6"/>
+   </widget>
+   <addaction name="menu"/>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+  <action name="action">
+   <property name="text">
+    <string>Импорт</string>
+   </property>
+  </action>
+  <action name="action_3">
+   <property name="text">
+    <string>Экспорт</string>
+   </property>
+  </action>
+  <action name="action_4">
+   <property name="text">
+    <string>Сохранить</string>
+   </property>
+  </action>
+  <action name="action_5">
+   <property name="text">
+    <string>Резюмировать</string>
+   </property>
+  </action>
+  <action name="action_6">
+   <property name="text">
+    <string>Ничего</string>
+   </property>
+  </action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
