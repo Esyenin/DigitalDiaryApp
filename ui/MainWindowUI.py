@@ -428,26 +428,48 @@ class Ui_MainWindow(object):
 
         self.settingsSemesterAction.addLayout(self.settingsSemesterActionDate)
 
-        self.settingsSemesterActionWeek = QVBoxLayout()
+        self.settingsSemesterActionWeek = QHBoxLayout()
         self.settingsSemesterActionWeek.setObjectName(u"settingsSemesterActionWeek")
+        self.settingsSemesterActionWeekInput = QVBoxLayout()
+        self.settingsSemesterActionWeekInput.setObjectName(u"settingsSemesterActionWeekInput")
         self.settingsSemesterActionLabelTip1 = QLabel(self.pageSettingsSemester)
         self.settingsSemesterActionLabelTip1.setObjectName(u"settingsSemesterActionLabelTip1")
 
-        self.settingsSemesterActionWeek.addWidget(self.settingsSemesterActionLabelTip1)
+        self.settingsSemesterActionWeekInput.addWidget(self.settingsSemesterActionLabelTip1)
 
         self.settingsSemesterActionTextBox = QTextEdit(self.pageSettingsSemester)
         self.settingsSemesterActionTextBox.setObjectName(u"settingsSemesterActionTextBox")
 
-        self.settingsSemesterActionWeek.addWidget(self.settingsSemesterActionTextBox)
+        self.settingsSemesterActionWeekInput.addWidget(self.settingsSemesterActionTextBox)
 
         self.settingsSemesterActionLabelTip2 = QLabel(self.pageSettingsSemester)
         self.settingsSemesterActionLabelTip2.setObjectName(u"settingsSemesterActionLabelTip2")
 
-        self.settingsSemesterActionWeek.addWidget(self.settingsSemesterActionLabelTip2)
+        self.settingsSemesterActionWeekInput.addWidget(self.settingsSemesterActionLabelTip2)
 
-        self.settingsSemesterActionWeek.setStretch(0, 1)
+        self.settingsSemesterActionWeekInput.setStretch(0, 1)
+        self.settingsSemesterActionWeekInput.setStretch(1, 1)
+        self.settingsSemesterActionWeekInput.setStretch(2, 1)
+
+        self.settingsSemesterActionWeek.addLayout(self.settingsSemesterActionWeekInput)
+
+        self.settingsSemesterActionWeekChange = QVBoxLayout()
+        self.settingsSemesterActionWeekChange.setObjectName(u"settingsSemesterActionWeekChange")
+        self.settingsSemesterActionWeekChangeButtonIncrease = QPushButton(self.pageSettingsSemester)
+        self.settingsSemesterActionWeekChangeButtonIncrease.setObjectName(u"settingsSemesterActionWeekChangeButtonIncrease")
+
+        self.settingsSemesterActionWeekChange.addWidget(self.settingsSemesterActionWeekChangeButtonIncrease)
+
+        self.settingsSemesterActionWeekChangeButtonDecrease = QPushButton(self.pageSettingsSemester)
+        self.settingsSemesterActionWeekChangeButtonDecrease.setObjectName(u"settingsSemesterActionWeekChangeButtonDecrease")
+
+        self.settingsSemesterActionWeekChange.addWidget(self.settingsSemesterActionWeekChangeButtonDecrease)
+
+
+        self.settingsSemesterActionWeek.addLayout(self.settingsSemesterActionWeekChange)
+
+        self.settingsSemesterActionWeek.setStretch(0, 5)
         self.settingsSemesterActionWeek.setStretch(1, 1)
-        self.settingsSemesterActionWeek.setStretch(2, 1)
 
         self.settingsSemesterAction.addLayout(self.settingsSemesterActionWeek)
 
@@ -568,6 +590,8 @@ class Ui_MainWindow(object):
         self.settingsSemesterActionDateLabelTip2.setText(QCoreApplication.translate("MainWindow", u"Select the first Monday of the semester. This will be Week 1.", None))
         self.settingsSemesterActionLabelTip1.setText(QCoreApplication.translate("MainWindow", u"Total Weeks in Semester", None))
         self.settingsSemesterActionLabelTip2.setText(QCoreApplication.translate("MainWindow", u"Default is 17 weeks. The schedule will only show weeks within this range.", None))
+        self.settingsSemesterActionWeekChangeButtonIncrease.setText(QCoreApplication.translate("MainWindow", u"+", None))
+        self.settingsSemesterActionWeekChangeButtonDecrease.setText(QCoreApplication.translate("MainWindow", u"-", None))
         self.settingsSemesterActionSaveButton.setText(QCoreApplication.translate("MainWindow", u"Save settings", None))
         self.settingsSemesterTip2Label.setText(QCoreApplication.translate("MainWindow", u"Current Semester Information\n"
 "\n"

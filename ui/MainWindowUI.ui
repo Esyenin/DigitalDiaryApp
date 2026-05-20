@@ -427,23 +427,45 @@
                      </layout>
                     </item>
                     <item>
-                     <layout class="QVBoxLayout" name="settingsSemesterActionWeek" stretch="1,1,1">
+                     <layout class="QHBoxLayout" name="settingsSemesterActionWeek" stretch="5,1">
                       <item>
-                       <widget class="QLabel" name="settingsSemesterActionLabelTip1">
-                        <property name="text">
-                         <string>Total Weeks in Semester</string>
-                        </property>
-                       </widget>
+                       <layout class="QVBoxLayout" name="settingsSemesterActionWeekInput" stretch="1,1,1">
+                        <item>
+                         <widget class="QLabel" name="settingsSemesterActionLabelTip1">
+                          <property name="text">
+                           <string>Total Weeks in Semester</string>
+                          </property>
+                         </widget>
+                        </item>
+                        <item>
+                         <widget class="QTextEdit" name="settingsSemesterActionTextBox"/>
+                        </item>
+                        <item>
+                         <widget class="QLabel" name="settingsSemesterActionLabelTip2">
+                          <property name="text">
+                           <string>Default is 17 weeks. The schedule will only show weeks within this range.</string>
+                          </property>
+                         </widget>
+                        </item>
+                       </layout>
                       </item>
                       <item>
-                       <widget class="QTextEdit" name="settingsSemesterActionTextBox"/>
-                      </item>
-                      <item>
-                       <widget class="QLabel" name="settingsSemesterActionLabelTip2">
-                        <property name="text">
-                         <string>Default is 17 weeks. The schedule will only show weeks within this range.</string>
-                        </property>
-                       </widget>
+                       <layout class="QVBoxLayout" name="settingsSemesterActionWeekChange">
+                        <item>
+                         <widget class="QPushButton" name="settingsSemesterActionWeekChangeButtonIncrease">
+                          <property name="text">
+                           <string>+</string>
+                          </property>
+                         </widget>
+                        </item>
+                        <item>
+                         <widget class="QPushButton" name="settingsSemesterActionWeekChangeButtonDecrease">
+                          <property name="text">
+                           <string>-</string>
+                          </property>
+                         </widget>
+                        </item>
+                       </layout>
                       </item>
                      </layout>
                     </item>
