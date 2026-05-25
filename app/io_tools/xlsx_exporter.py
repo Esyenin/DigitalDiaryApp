@@ -1,5 +1,15 @@
 """
-Экспорт структурированных данных приложения в формат XLSX.
+Экспорт табличных данных приложения в формат XLSX.
+
+Модуль отвечает только за техническую запись книги Excel из уже подготовленного
+payload-а. Он не принимает архитектурных решений о том:
+
+1. Какие сущности нужно выгружать.
+2. Откуда брать данные.
+3. Куда дальше передавать результат.
+
+Эти вопросы остаются на уровнях application и API. Здесь задача уже уже:
+получить табличные строки и корректно сохранить их в XLSX-файл.
 """
 from __future__ import annotations
 
@@ -13,13 +23,9 @@ from typing import Any
 from openpyxl import Workbook
 from pydantic import BaseModel
 
+from app.io_tools.tabular.payloads import ExportPayload, ExportRow, RowValue
 from app.io_tools.xlsx_config import XLSX_COLUMNS_BY_SHEET, XLSX_SHEETS_ORDER
 from app.models import Base
-
-
-RowValue = str | int | float | bool | datetime | date | time | None
-ExportRow = Mapping[str, object] | BaseModel | Base
-ExportPayload = Mapping[str, Iterable[ExportRow]]
 logger = logging.getLogger(__name__)
 
 

@@ -1,66 +1,14 @@
 """
-Инструменты импорта данных из XLSX.
+Внутренние адаптеры и фасады XLSX-импорта.
 
-Подпакет объединяет два сценария работы с Excel-файлами:
+Подпакет содержит:
 
-1. Стандартный импорт
-   Используется для внутренних таблиц приложения, где листы, порядок колонок
-   и обязательные поля заранее известны.
-2. Импорт произвольного диапазона
-   Используется для чтения таблиц, которые находятся в любом месте листа и
-   требуют либо умной нормализации, либо строгой проверки формата.
+1. Низкоуровневое чтение нестандартных XLSX-областей.
+2. Тонкие адаптеры для legacy-точек расширения.
+3. Форматный фасад `XlsxImporter`.
 
-Основные публичные точки входа:
-
-- `XlsxImporter` — фасад чтения XLSX;
-- `RawWorkbookReader` — поиск табличных областей в книге;
-- `XlsxRangeReader` — чтение конкретного диапазона;
-- `DataNormalizer`, `DataResolver`, `ImportProcessor` — умная подготовка
-  внешних таблиц;
-- `StrictImportProcessor` — строгая подготовка таблиц внутреннего формата.
+Здесь намеренно нет eager-импортов. Это позволяет держать внутренние модули
+слабо связанными и не провоцировать циклические зависимости. Внешний код
+должен импортировать публичные сущности через `app.io_tools`, а не через этот
+подпакет напрямую.
 """
-from app.io_tools.xlsx_importer.data_normalizer import (
-    DataNormalizer,
-    DataResolver,
-    ImportProcessingResult,
-    ImportProcessor,
-    NormalizedRow,
-    ResolvedRow,
-)
-from app.io_tools.xlsx_importer.data_processor import (
-    DataProcessingResult,
-    DataProcessor,
-    HeaderBinding,
-    ProcessedRow,
-)
-from app.io_tools.xlsx_importer.strict_import import (
-    StrictImportProcessor,
-    StrictImportResult,
-)
-from app.io_tools.xlsx_importer.raw_reader import (
-    ExtractedTable,
-    RawWorkbookReader,
-    TableRegion,
-    XlsxRangeReader,
-)
-from app.io_tools.xlsx_importer.xlsx_importer import XlsxImporter
-
-__all__ = [
-    "TableRegion",
-    "ExtractedTable",
-    "NormalizedRow",
-    "ResolvedRow",
-    "ImportProcessingResult",
-    "HeaderBinding",
-    "ProcessedRow",
-    "DataProcessingResult",
-    "StrictImportResult",
-    "RawWorkbookReader",
-    "XlsxRangeReader",
-    "DataNormalizer",
-    "DataResolver",
-    "ImportProcessor",
-    "DataProcessor",
-    "StrictImportProcessor",
-    "XlsxImporter",
-]

@@ -1,34 +1,47 @@
 """
-Высокоуровневый импорт данных приложения из XLSX.
+Форматный фасад импорта XLSX в разных режимах.
 
-Модуль объединяет три варианта работы с Excel-файлами:
+Класс координирует все XLSX-сценарии, но не содержит внутри тяжёлую
+нормализацию или валидацию строк. Его задача:
 
-1. Полностью стандартный импорт по внутреннему формату приложения.
-2. Чтение произвольного диапазона листа как отдельной таблицы.
-3. Подготовка выбранного диапазона к smart- или strict-импорту.
+1. Собрать форматные зависимости.
+2. Выбрать нужную стратегию чтения.
+3. Создать контекст операции.
+4. Вернуть результат подходящего use-case.
+
+Таким образом `XlsxImporter` служит форматным gateway-объектом, а не местом,
+где смешаны чтение файла, правила сущностей и прикладная оркестрация.
 """
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
 
-from openpyxl import load_workbook
-
-from app.io_tools.xlsx_importer.data_normalizer import ImportProcessingResult, ImportProcessor
-from app.io_tools.xlsx_importer.data_processor import DataProcessingResult, DataProcessor
-from app.io_tools.xlsx_config import (
-    XLSX_COLUMNS_BY_SHEET,
-    XLSX_REQUIRED_COLUMNS_BY_SHEET,
-    XLSX_SHEETS_ORDER,
+from app.io_tools.application.import_use_cases import (
+    PrepareDetailedSmartImportUseCase,
+    PrepareSmartImportUseCase,
+    PrepareStrictImportUseCase,
 )
-from app.io_tools.xlsx_importer.raw_reader import (
-    ExtractedTable,
-    RawWorkbookReader,
-    TableRegion,
-    XlsxRangeReader,
+from app.io_tools.engine.operation_context import ImportOperationContext
+from app.io_tools.engine.operation_result import TabularImportResult
+from app.io_tools.formats.xlsx.readers import (
+    SelectedRangeReader,
+    StandardWorkbookReader,
+    TableRegionFinder,
 )
-from app.io_tools.xlsx_importer.strict_import import StrictImportProcessor, StrictImportResult
+from app.io_tools.formats.xlsx.strategies import (
+    SmartImportStrategy,
+    SmartProcessingStrategy,
+    StandardImportStrategy,
+    StrictImportStrategy,
+)
+from app.io_tools.engine.processing_models import (
+    DataProcessingResult,
+    ImportProcessingResult,
+    StrictImportResult,
+)
+from app.io_tools.tabular.models import ExtractedTable, TableRegion
+from app.io_tools.xlsx_importer.raw_reader import RawWorkbookReader, XlsxRangeReader
 
 
 logger = logging.getLogger(__name__)
@@ -38,16 +51,9 @@ class XlsxImporter:
     """
     Координирует чтение XLSX-файлов в разных режимах.
 
-    Класс объединяет низкоуровневое чтение диапазонов и прикладные сценарии
-    импорта. Он умеет:
-
-    - импортировать стандартный XLSX формата приложения;
-    - искать таблицы в книге без привязки к ячейке `A1`;
-    - читать конкретный диапазон как самостоятельную таблицу;
-    - запускать smart- или strict-подготовку считанных данных.
-
-    Сам класс не сохраняет данные в базу. Его задача — вернуть структурированный
-    результат чтения и предварительной подготовки таблицы.
+    Класс больше не хранит внутри всю логику чтения и проверки. Он только
+    маршрутизирует вызов в нужную стратегию и сохраняет совместимый API для
+    существующего кода приложения.
     """
 
     def __init__(
@@ -55,79 +61,99 @@ class XlsxImporter:
         *,
         raw_workbook_reader: RawWorkbookReader | None = None,
         range_reader: XlsxRangeReader | None = None,
-        smart_import_processor: ImportProcessor | None = None,
-        data_processor: DataProcessor | None = None,
-        strict_import_processor: StrictImportProcessor | None = None,
     ) -> None:
         """
-        Создает фасад импорта XLSX.
+        Создаёт фасад импорта XLSX.
 
-        :param raw_workbook_reader: Компонент, который ищет кандидаты на
-            таблицы в произвольной книге Excel.
-        :param range_reader: Компонент, который читает конкретный диапазон
-            листа и возвращает диагностическую информацию по заголовкам.
-        :param smart_import_processor: Процессор умной подготовки внешних
-            таблиц, например со студентами или группами.
-        :param data_processor: Слой детальной обработки smart-таблицы с
-            сохранением карты распознавания для UI.
-        :param strict_import_processor: Процессор строгой подготовки таблиц
-            внутреннего формата приложения.
+        :param raw_workbook_reader: Пользовательский reader поиска таблиц.
+        :param range_reader: Пользовательский reader диапазона.
         """
         self.raw_workbook_reader = raw_workbook_reader or RawWorkbookReader()
         self.range_reader = range_reader or XlsxRangeReader()
-        self.smart_import_processor = smart_import_processor or ImportProcessor()
-        self.data_processor = data_processor or DataProcessor(
-            import_processor=self.smart_import_processor,
+
+        self.table_region_finder = TableRegionFinder(
+            raw_reader=self.raw_workbook_reader,
         )
-        self.strict_import_processor = (
-            strict_import_processor or StrictImportProcessor()
+        self.selected_range_reader = SelectedRangeReader(
+            range_reader=self.range_reader,
         )
+        self.standard_workbook_reader = StandardWorkbookReader()
+        self.standard_import_strategy = StandardImportStrategy(
+            workbook_reader=self.standard_workbook_reader,
+        )
+        self.smart_import_strategy = SmartImportStrategy(
+            use_case=PrepareSmartImportUseCase(
+                range_reader=self.selected_range_reader,
+            )
+        )
+        self.smart_processing_strategy = SmartProcessingStrategy(
+            use_case=PrepareDetailedSmartImportUseCase(
+                range_reader=self.selected_range_reader,
+            )
+        )
+        self.strict_import_strategy = StrictImportStrategy(
+            use_case=PrepareStrictImportUseCase(
+                range_reader=self.selected_range_reader,
+            )
+        )
+
+    def read_standard_workbook(
+        self,
+        file_path: str | Path,
+    ) -> TabularImportResult:
+        """
+        Читает стандартный XLSX-файл приложения с диагностикой.
+
+        :param file_path: Путь к XLSX-файлу.
+        :return: Результат чтения книги с данными и ошибками.
+        """
+        logger.info(
+            "XlsxImporter standard workbook read requested. source=%s.",
+            file_path,
+        )
+        context = ImportOperationContext(file_path=Path(file_path))
+        result = self.standard_import_strategy.execute(context)
+        logger.info(
+            "XlsxImporter standard workbook read finished. source=%s sheets_count=%s errors=%s.",
+            file_path,
+            len(result.data),
+            len(result.errors),
+        )
+        return result
 
     def import_data(self, file_path: str | Path) -> dict[str, list[dict[str, object]]]:
         """
         Импортирует XLSX-файл стандартного формата приложения.
 
-        Метод ожидает, что книга уже оформлена в том же формате, который
-        использует приложение при стандартном экспорте: известные имена листов,
-        ожидаемые заголовки и согласованная структура строк.
+        Метод сохранён для совместимости с текущим кодом. Внутри он опирается
+        на новый reader, который умеет сначала собирать диагностику, а затем
+        уже решать, нужно ли останавливать импорт.
 
-        :param file_path: Путь к XLSX-файлу стандартного импорта.
-        :return: Словарь вида `имя_листа -> список_строк`, где каждая строка
-            представлена словарем значений по заголовкам.
-        :raises ValueError: Если книга содержит неизвестные листы или если в
-            одном из листов отсутствуют обязательные колонки.
+        :param file_path: Путь к XLSX-файлу.
+        :return: Словарь вида `имя_листа -> список строк`.
+        :raises ValueError: Если стандартный XLSX-файл содержит ошибки.
         """
         logger.info("XlsxImporter import started. source=%s.", file_path)
-        workbook = load_workbook(file_path)
-        workbook_sheet_names = workbook.sheetnames
-        logger.debug(
-            "XlsxImporter workbook opened. sheets=%s.",
-            workbook_sheet_names,
-        )
-        self._validate_sheet_names(workbook_sheet_names)
-
-        imported_data: dict[str, list[dict[str, object]]] = {}
-        ordered_sheet_names = [
-            sheet_name
-            for sheet_name in XLSX_SHEETS_ORDER
-            if sheet_name in workbook_sheet_names
-        ]
-        ordered_sheet_names.extend(
-            sheet_name
-            for sheet_name in workbook_sheet_names
-            if sheet_name not in ordered_sheet_names
-        )
-
-        for sheet_name in ordered_sheet_names:
-            worksheet = workbook[sheet_name]
-            imported_data[sheet_name] = self._read_sheet(sheet_name, worksheet)
+        result = self.read_standard_workbook(file_path)
+        if not result.is_valid:
+            logger.error(
+                "XlsxImporter import failed. source=%s errors=%s.",
+                file_path,
+                result.errors,
+            )
+            first_error = next(
+                message.text
+                for message in result.messages
+                if message.level == "error"
+            )
+            raise ValueError(first_error)
 
         logger.info(
             "XlsxImporter import finished. source=%s sheets_count=%s.",
             file_path,
-            len(imported_data),
+            len(result.data),
         )
-        return imported_data
+        return result.data
 
     def find_table_candidates(
         self,
@@ -138,16 +164,15 @@ class XlsxImporter:
         Ищет в книге области, похожие на таблицы.
 
         :param file_path: Путь к XLSX-файлу.
-        :param min_score: Нижняя граница оценки похожести области на таблицу.
-        :return: Список найденных прямоугольных областей с координатами,
-            плотностью заполнения и итоговой оценкой.
+        :param min_score: Нижняя граница оценки похожести.
+        :return: Список найденных табличных областей.
         """
         logger.info(
             "XlsxImporter raw table detection started. source=%s min_score=%s.",
             file_path,
             min_score,
         )
-        tables = self.raw_workbook_reader.find_tables_in_workbook(
+        tables = self.table_region_finder.find(
             file_path,
             min_score=min_score,
         )
@@ -167,16 +192,13 @@ class XlsxImporter:
         entity_type: str | None = None,
     ) -> ExtractedTable:
         """
-        Читает произвольный диапазон листа как самостоятельную таблицу.
+        Читает произвольный диапазон листа как отдельную таблицу.
 
         :param file_path: Путь к XLSX-файлу.
         :param sheet_name: Имя листа.
-        :param cell_range: Диапазон Excel, который нужно прочитать, например
-            `C5:N20`.
-        :param entity_type: Предполагаемый тип сущности. Нужен, если после
-            чтения таблицу надо сопоставить с полями известной модели.
-        :return: Объект `ExtractedTable` с заголовками, строками и результатом
-            базовой диагностики диапазона.
+        :param cell_range: Диапазон Excel.
+        :param entity_type: Ожидаемый тип сущности.
+        :return: Извлечённая таблица с диагностикой.
         """
         logger.info(
             "XlsxImporter range read requested. source=%s sheet=%s range=%s entity_type=%s.",
@@ -185,7 +207,7 @@ class XlsxImporter:
             cell_range,
             entity_type,
         )
-        table = self.range_reader.read_range(
+        table = self.selected_range_reader.read(
             file_path,
             sheet_name,
             cell_range,
@@ -212,10 +234,9 @@ class XlsxImporter:
         Читает ранее найденную табличную область как диапазон Excel.
 
         :param file_path: Путь к XLSX-файлу.
-        :param table_region: Найденная область таблицы.
-        :param entity_type: Предполагаемый тип сущности для дальнейшей
-            классификации заголовков и строк.
-        :return: Извлеченная таблица вместе с диагностикой структуры.
+        :param table_region: Найденная табличная область.
+        :param entity_type: Ожидаемый тип сущности.
+        :return: Извлечённая таблица вместе с диагностикой.
         """
         logger.info(
             "XlsxImporter detected table read requested. source=%s sheet=%s range=%s entity_type=%s.",
@@ -224,9 +245,10 @@ class XlsxImporter:
             table_region.range,
             entity_type,
         )
-        table = self.range_reader.read_detected_table(
+        table = self.selected_range_reader.read(
             file_path,
-            table_region,
+            table_region.sheet,
+            table_region.range,
             entity_type=entity_type,
         )
         logger.info(
@@ -253,10 +275,8 @@ class XlsxImporter:
         :param file_path: Путь к XLSX-файлу.
         :param sheet_name: Имя листа.
         :param cell_range: Диапазон Excel.
-        :param entity_type: Тип smart-сущности, например `students` или
-            `groups`.
-        :return: Результат нормализации, разрешения ссылок и сборки
-            `create_payloads` для дальнейшего импорта.
+        :param entity_type: Тип smart-сущности.
+        :return: Результат smart-подготовки.
         """
         logger.info(
             "XlsxImporter smart read requested. source=%s sheet=%s range=%s entity_type=%s.",
@@ -265,13 +285,13 @@ class XlsxImporter:
             cell_range,
             entity_type,
         )
-        extracted_table = self.read_table_range(
-            file_path,
-            sheet_name,
-            cell_range,
+        context = ImportOperationContext(
+            file_path=Path(file_path),
+            sheet_name=sheet_name,
+            cell_range=cell_range,
             entity_type=entity_type,
         )
-        result = self.smart_import_processor.process_table(extracted_table)
+        result = self.smart_import_strategy.execute(context)
         logger.info(
             "XlsxImporter smart read finished. entity_type=%s payloads=%s errors=%s.",
             result.entity_type,
@@ -294,9 +314,8 @@ class XlsxImporter:
         :param file_path: Путь к XLSX-файлу.
         :param sheet_name: Имя листа.
         :param cell_range: Диапазон Excel.
-        :param entity_type: Тип strict-сущности внутреннего формата приложения.
-        :return: Результат строгой проверки заголовков и валидации строк через
-            create-схему нужной сущности.
+        :param entity_type: Тип strict-сущности.
+        :return: Результат strict-подготовки.
         """
         logger.info(
             "XlsxImporter strict read requested. source=%s sheet=%s range=%s entity_type=%s.",
@@ -305,13 +324,13 @@ class XlsxImporter:
             cell_range,
             entity_type,
         )
-        extracted_table = self.read_table_range(
-            file_path,
-            sheet_name,
-            cell_range,
+        context = ImportOperationContext(
+            file_path=Path(file_path),
+            sheet_name=sheet_name,
+            cell_range=cell_range,
             entity_type=entity_type,
         )
-        result = self.strict_import_processor.process_table(extracted_table)
+        result = self.strict_import_strategy.execute(context)
         logger.info(
             "XlsxImporter strict read finished. entity_type=%s payloads=%s errors=%s.",
             result.entity_type,
@@ -329,14 +348,13 @@ class XlsxImporter:
         entity_type: str,
     ) -> DataProcessingResult:
         """
-        Читает диапазон и строит полную картину его smart-обработки.
+        Читает диапазон и строит полную картину smart-обработки.
 
         :param file_path: Путь к XLSX-файлу.
         :param sheet_name: Имя листа.
         :param cell_range: Диапазон Excel.
         :param entity_type: Тип smart-сущности.
-        :return: Результат обработки с картой заголовков, построчной
-            детализацией и итоговыми payload-ами.
+        :return: Детальный результат обработки.
         """
         logger.info(
             "XlsxImporter smart processing requested. source=%s sheet=%s range=%s entity_type=%s.",
@@ -345,13 +363,13 @@ class XlsxImporter:
             cell_range,
             entity_type,
         )
-        extracted_table = self.read_table_range(
-            file_path,
-            sheet_name,
-            cell_range,
+        context = ImportOperationContext(
+            file_path=Path(file_path),
+            sheet_name=sheet_name,
+            cell_range=cell_range,
             entity_type=entity_type,
         )
-        result = self.data_processor.process_table(extracted_table)
+        result = self.smart_processing_strategy.execute(context)
         logger.info(
             "XlsxImporter smart processing finished. entity_type=%s rows=%s payloads=%s errors=%s.",
             result.entity_type,
@@ -360,112 +378,3 @@ class XlsxImporter:
             len(result.errors),
         )
         return result
-
-    @staticmethod
-    def _validate_sheet_names(sheet_names: list[str]) -> None:
-        """
-        Проверяет, что стандартная книга не содержит лишних листов.
-
-        :param sheet_names: Имена листов книги.
-        :return: `None`.
-        :raises ValueError: Если найден хотя бы один лист, который не описан в
-            конфигурации стандартного XLSX-формата.
-        """
-        unknown_sheet_names = [
-            sheet_name
-            for sheet_name in sheet_names
-            if sheet_name not in XLSX_COLUMNS_BY_SHEET
-        ]
-        if unknown_sheet_names:
-            joined = ", ".join(unknown_sheet_names)
-            logger.error("XlsxImporter found unknown sheets: %s.", joined)
-            raise ValueError(f"Неизвестные листы в XLSX-файле: {joined}.")
-
-    def _read_sheet(
-        self,
-        sheet_name: str,
-        worksheet: Any,
-    ) -> list[dict[str, object]]:
-        """
-        Читает один лист стандартной книги и превращает его строки в словари.
-
-        :param sheet_name: Имя листа.
-        :param worksheet: Лист openpyxl.
-        :return: Список строк листа, где ключами служат заголовки колонок.
-        :raises ValueError: Если в листе отсутствуют обязательные колонки.
-        """
-        rows = list(worksheet.iter_rows(values_only=True))
-        if not rows:
-            self._validate_headers(sheet_name, ())
-            logger.debug("XlsxImporter read empty sheet=%s.", sheet_name)
-            return []
-
-        raw_headers = rows[0]
-        headers = tuple(
-            str(header).strip()
-            for header in raw_headers
-            if header is not None and str(header).strip()
-        )
-        self._validate_headers(sheet_name, headers)
-        logger.debug(
-            "XlsxImporter validated headers. sheet=%s headers=%s.",
-            sheet_name,
-            headers,
-        )
-
-        imported_rows: list[dict[str, object]] = []
-        for raw_row in rows[1:]:
-            row_data = {
-                header: raw_row[index] if index < len(raw_row) else None
-                for index, header in enumerate(headers)
-            }
-            if self._is_empty_row(row_data):
-                continue
-            imported_rows.append(row_data)
-
-        logger.debug(
-            "XlsxImporter read sheet=%s rows_count=%s headers=%s.",
-            sheet_name,
-            len(imported_rows),
-            headers,
-        )
-        return imported_rows
-
-    @staticmethod
-    def _is_empty_row(row_data: dict[str, object]) -> bool:
-        """
-        Проверяет, содержит ли строка хоть одно полезное значение.
-
-        :param row_data: Словарь значений строки.
-        :return: `True`, если все значения строки отсутствуют, иначе `False`.
-        """
-        return all(value is None for value in row_data.values())
-
-    @staticmethod
-    def _validate_headers(sheet_name: str, headers: tuple[str, ...]) -> None:
-        """
-        Проверяет обязательные заголовки стандартного листа.
-
-        :param sheet_name: Имя листа.
-        :param headers: Колонки, считанные из файла.
-        :return: `None`.
-        :raises ValueError: Если набор заголовков не содержит хотя бы одну
-            колонку, обязательную для данного листа.
-        """
-        required_headers = XLSX_REQUIRED_COLUMNS_BY_SHEET.get(sheet_name, ())
-        missing_headers = [
-            header
-            for header in required_headers
-            if header not in headers
-        ]
-        if missing_headers:
-            joined = ", ".join(missing_headers)
-            logger.error(
-                "XlsxImporter missing required headers. sheet=%s headers=%s.",
-                sheet_name,
-                joined,
-            )
-            raise ValueError(
-                f"В листе {sheet_name} отсутствуют обязательные колонки: "
-                f"{joined}."
-            )

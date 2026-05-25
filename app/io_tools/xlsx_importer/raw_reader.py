@@ -11,7 +11,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 import logging
 from pathlib import Path
 from typing import Any
@@ -19,76 +19,13 @@ from typing import Any
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter, range_boundaries
 from openpyxl.worksheet.worksheet import Worksheet
-from pydantic import BaseModel
 
-from app.io_tools.xlsx_config import XLSX_REQUIRED_COLUMNS_BY_SHEET, normalize_sheet_keys
-from app.schemas import (
-    AttendanceFilterSchema,
-    CommentFilterSchema,
-    GroupFilterSchema,
-    LessonFilterSchema,
-    MarkFilterSchema,
-    ScheduleFilterSchema,
-    ScheduleGroupLinkFilterSchema,
-    StudentFilterSchema,
-)
+from app.io_tools.tabular.header_classifier import classify_tabular_headers
+from app.io_tools.tabular.models import ExtractedTable, TableRegion
+from app.io_tools.xlsx_config import normalize_sheet_keys
 
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(slots=True)
-class TableRegion:
-    """
-    Описывает найденную прямоугольную область таблицы на листе Excel.
-
-    Объект хранит координаты диапазона, размеры, плотность заполнения и
-    итоговую оценку, по которой область была признана похожей на таблицу.
-    """
-
-    sheet: str
-    range: str
-    min_row: int
-    max_row: int
-    min_col: int
-    max_col: int
-    rows: int
-    cols: int
-    total_cells: int
-    non_empty_cells: int
-    density: float
-    score: float
-
-
-@dataclass(slots=True)
-class ExtractedTable:
-    """
-    Хранит результат чтения выбранного диапазона листа.
-
-    Помимо самих строк объект содержит диагностическую информацию: известные
-    и неизвестные заголовки, недостающие обязательные колонки, предупреждения
-    и ошибки структурной проверки.
-    """
-
-    sheet: str
-    range: str
-    entity_type: str | None
-    headers: tuple[str, ...]
-    rows: list[dict[str, object]]
-    known_headers: tuple[str, ...] = ()
-    unknown_headers: tuple[str, ...] = ()
-    missing_required_headers: tuple[str, ...] = ()
-    warnings: list[str] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)
-
-    @property
-    def is_valid(self) -> bool:
-        """
-        Показывает, прошла ли таблица базовую структурную проверку.
-
-        :return: `True`, если критических ошибок не найдено, иначе `False`.
-        """
-        return not self.errors
 
 
 class RawWorkbookReader:
@@ -653,18 +590,6 @@ class XlsxRangeReader:
     возвращает их как часть диагностики, чтобы следующий слой сам решил,
     что с ними делать.
     """
-
-    _schema_by_sheet_key: dict[str, type[BaseModel]] = {
-        "groups": GroupFilterSchema,
-        "schedules": ScheduleFilterSchema,
-        "students": StudentFilterSchema,
-        "schedule_group_links": ScheduleGroupLinkFilterSchema,
-        "lessons": LessonFilterSchema,
-        "attendances": AttendanceFilterSchema,
-        "marks": MarkFilterSchema,
-        "comments": CommentFilterSchema,
-    }
-
     def read_range(
         self,
         file_path: str | Path,
@@ -932,17 +857,12 @@ class XlsxRangeReader:
         if entity_type is None:
             return (), headers, ()
 
-        schema = self._schema_by_sheet_key[entity_type]
-        known_fields = tuple(schema.model_fields.keys())
-        known_headers = tuple(header for header in headers if header in known_fields)
-        unknown_headers = tuple(header for header in headers if header not in known_fields)
-        missing_required_headers = tuple(
-            header
-            for header in XLSX_REQUIRED_COLUMNS_BY_SHEET.get(entity_type, ())
-            if header not in headers
+        classification = classify_tabular_headers(entity_type, headers)
+        return (
+            classification.known_headers,
+            classification.unknown_headers,
+            classification.missing_required_headers,
         )
-
-        return known_headers, unknown_headers, missing_required_headers
 
 
 def find_tables_on_sheet(

@@ -14,9 +14,11 @@ from app.io_tools import (
     DataProcessingResult,
     DataProcessor,
     DataResolver,
+    ExportRequest,
     ExtractedTable,
     HeaderBinding,
     ImportExportService,
+    ImportRequest,
     ImportProcessor,
     RawWorkbookReader,
     ProcessedRow,
@@ -321,6 +323,44 @@ def test_import_export_service_delegates_export_and_import(tmp_path):
     assert imported["groups"][0]["name"] == "IU7-11"
 
 
+def test_import_export_service_returns_standard_xlsx_errors(tmp_path, caplog):
+    """
+    Сервис стандартного чтения XLSX возвращает ошибки и пишет их в лог.
+    """
+    service = ImportExportService()
+    exporter = XlsxExporter()
+    file_path = tmp_path / "service_import_errors.xlsx"
+    payload = {
+        "students": [{"id": 1, "surname": "Petrov"}],
+    }
+
+    exporter.export(payload, file_path)
+    workbook = load_workbook(file_path)
+    worksheet = workbook["students"]
+    worksheet.delete_cols(2, 3)
+    workbook.save(file_path)
+
+    with caplog.at_level(logging.DEBUG):
+        result = service.import_data(
+            ImportRequest(
+                source_path=file_path,
+                format_name="xlsx",
+                strategy_name="standard",
+                destination_name="return",
+            )
+        )
+
+    assert result.is_valid is False
+    assert result.data["students"] == []
+    assert len(result.errors) == 1
+    assert (
+        "В листе students отсутствуют обязательные колонки: "
+        "group_id, surname, first_name."
+    ) in result.errors[0]
+    assert "sheet=students" in result.errors[0]
+    assert "Standard XLSX read returned validation errors" in caplog.text
+
+
 def test_xlsx_importer_finds_table_candidates_outside_a1(tmp_path):
     """
     Поиск нестандартных таблиц находит таблицу, даже если она начинается не в A1.
@@ -556,7 +596,14 @@ def test_smart_reader_detects_and_reads_real_nonstandard_tables():
     if not file_path.exists():
         pytest.skip(f"Тестовый XLSX-файл не найден: {file_path}")
 
-    tables = service.find_xlsx_tables(file_path)
+    tables = service.import_data(
+        ImportRequest(
+            source_path=file_path,
+            format_name="xlsx",
+            strategy_name="detect_tables",
+            destination_name="return",
+        )
+    )
 
     assert [(table.sheet, table.range) for table in tables] == [
         ("Лист1", "C3:D10"),
@@ -564,23 +611,38 @@ def test_smart_reader_detects_and_reads_real_nonstandard_tables():
         ("Лист2", "C5:D11"),
     ]
 
-    first_groups = service.read_xlsx_table_range(
-        file_path,
-        "Лист1",
-        "C3:D10",
-        entity_type="group",
+    first_groups = service.import_data(
+        ImportRequest(
+            source_path=file_path,
+            format_name="xlsx",
+            strategy_name="range",
+            destination_name="return",
+            sheet_name="Лист1",
+            cell_range="C3:D10",
+            entity_type="group",
+        )
     )
-    students = service.read_xlsx_table_range(
-        file_path,
-        "Лист1",
-        "L12:O16",
-        entity_type="student",
+    students = service.import_data(
+        ImportRequest(
+            source_path=file_path,
+            format_name="xlsx",
+            strategy_name="range",
+            destination_name="return",
+            sheet_name="Лист1",
+            cell_range="L12:O16",
+            entity_type="student",
+        )
     )
-    second_groups = service.read_xlsx_table_range(
-        file_path,
-        "Лист2",
-        "C5:D11",
-        entity_type="group",
+    second_groups = service.import_data(
+        ImportRequest(
+            source_path=file_path,
+            format_name="xlsx",
+            strategy_name="range",
+            destination_name="return",
+            sheet_name="Лист2",
+            cell_range="C5:D11",
+            entity_type="group",
+        )
     )
 
     assert first_groups.headers == ("Группы", "Специальности")
@@ -987,11 +1049,16 @@ def test_import_export_service_reads_strict_table_with_standard_headers(tmp_path
     worksheet.cell(row=8, column=8, value=None)
     workbook.save(file_path)
 
-    result = service.read_strict_xlsx_table(
-        file_path,
-        "Sheet1",
-        "C7:H8",
-        entity_type="attendance",
+    result = service.import_data(
+        ImportRequest(
+            source_path=file_path,
+            format_name="xlsx",
+            strategy_name="strict",
+            destination_name="return",
+            sheet_name="Sheet1",
+            cell_range="C7:H8",
+            entity_type="attendance",
+        )
     )
 
     assert result.entity_type == "attendances"
@@ -1021,11 +1088,16 @@ def test_import_export_service_processes_smart_table_with_recognition_map(tmp_pa
     worksheet["F5"] = "a@test.ru"
     workbook.save(file_path)
 
-    result = service.process_smart_xlsx_table(
-        file_path,
-        "Sheet1",
-        "C4:F5",
-        entity_type="student",
+    result = service.import_data(
+        ImportRequest(
+            source_path=file_path,
+            format_name="xlsx",
+            strategy_name="smart_detailed",
+            destination_name="return",
+            sheet_name="Sheet1",
+            cell_range="C4:F5",
+            entity_type="student",
+        )
     )
 
     assert isinstance(result, DataProcessingResult)
@@ -1104,11 +1176,16 @@ def test_import_export_service_rejects_strict_table_with_unknown_headers(tmp_pat
     worksheet.cell(row=6, column=5, value="extra")
     workbook.save(file_path)
 
-    result = service.read_strict_xlsx_table(
-        file_path,
-        "Sheet1",
-        "B5:E6",
-        entity_type="comment",
+    result = service.import_data(
+        ImportRequest(
+            source_path=file_path,
+            format_name="xlsx",
+            strategy_name="strict",
+            destination_name="return",
+            sheet_name="Sheet1",
+            cell_range="B5:E6",
+            entity_type="comment",
+        )
     )
 
     assert result.entity_type == "comments"
@@ -1131,15 +1208,30 @@ def test_io_tools_emit_basic_logs(tmp_path, caplog):
     }
 
     with caplog.at_level(logging.DEBUG):
-        service.export_to_xlsx(payload, file_path)
-        service.import_from_xlsx(file_path)
+        service.export_data(
+            ExportRequest(
+                payload=payload,
+                target_path=file_path,
+                format_name="xlsx",
+                strategy_name="standard",
+                destination_name="file",
+            )
+        )
+        service.import_data(
+            ImportRequest(
+                source_path=file_path,
+                format_name="xlsx",
+                strategy_name="standard",
+                destination_name="return",
+            )
+        )
 
-    assert "XLSX export requested" in caplog.text
+    assert "Export requested" in caplog.text
     assert "XlsxExporter export started" in caplog.text
     assert "XlsxExporter export finished" in caplog.text
-    assert "XLSX import requested" in caplog.text
-    assert "XlsxImporter import started" in caplog.text
-    assert "XlsxImporter import finished" in caplog.text
+    assert "Import requested" in caplog.text
+    assert "XlsxImporter standard workbook read requested" in caplog.text
+    assert "XlsxImporter standard workbook read finished" in caplog.text
 
 
 def test_xlsx_round_trip_exports_all_database_entities(db_session):
