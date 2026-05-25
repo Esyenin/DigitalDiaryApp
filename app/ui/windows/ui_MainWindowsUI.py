@@ -1,27 +1,910 @@
+from __future__ import annotations
+
+from datetime import date, time, timedelta
+import sys
+
+from PySide6.QtCore import QSettings, Qt, QTime
 from PySide6.QtWidgets import (
     QApplication,
+    QAbstractItemView,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QTextEdit,
+    QTimeEdit,
+    QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtCore import Qt
 
+from app.models import Group, Lesson, Schedule, Student
+from app.ui.data.calendar import (
+    DAY_NAMES,
+    DEFAULT_SEMESTER_START,
+    DEFAULT_SEMESTER_WEEKS,
+    SemesterSettings,
+    clamp_week_start,
+    day_index,
+    format_input_date,
+    format_long_date,
+    format_week_range,
+    monday_for,
+    parse_date_input,
+    parse_week_count,
+    week_number_for,
+    week_type_for_number,
+    week_type_label,
+)
+from app.ui.data.repository import DiaryRepository
 from app.ui.generated.MainWindowUI import Ui_MainWindow
-import app.ui.generated.MainWindowUI
+from app.ui.widgets.cards import (
+    GroupCard,
+    ScheduleTemplateCard,
+    StudentCard,
+    make_metric,
+    make_table_row,
+)
+from app.ui.widgets.lesson_card import LessonCard
 
-import sys
+
+def clear_layout(layout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        child_layout = item.layout()
+        if widget is not None:
+            widget.setParent(None)
+            widget.deleteLater()
+        elif child_layout is not None:
+            clear_layout(child_layout)
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        self.repository = DiaryRepository()
+        self.settings_store = QSettings("DigitalDiaryApp", "TeacherDigitalDiary")
+        self.semester_settings = self._load_semester_settings()
+        self.selected_week_start = clamp_week_start(
+            monday_for(date.today()),
+            self.semester_settings,
+        )
+        self.student_filter_group_id: int | None = None
+        self.detail_page: QWidget | None = None
+
+        self.repository.seed_demo_data(self.semester_settings)
+
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
-
         self.ui.sourceWidget.setVisible(True)
         self.ui.mainWidget.setCurrentWidget(self.ui.pageSchedule)
-        self._apply_layout_visuals()
 
-        self.setStyleSheet("""
+        self._apply_styles()
+        self._apply_layout_visuals()
+        self._configure_inputs()
+        self._connect_actions()
+        self._populate_semester_inputs()
+        self.refresh_all()
+
+    def closeEvent(self, event):  # noqa: N802 - Qt method name
+        self.repository.close()
+        super().closeEvent(event)
+
+    def refresh_all(self) -> None:
+        self.render_schedule()
+        self.render_groups()
+        self.render_settings_schedules()
+        self.render_settings_groups()
+        self.render_settings_students()
+        self.update_semester_info_label()
+        self._sync_nav_state()
+
+    def _load_semester_settings(self) -> SemesterSettings:
+        start_text = self.settings_store.value("semester/start_date", "")
+        weeks_text = self.settings_store.value("semester/total_weeks", "")
+        try:
+            start_date = parse_date_input(str(start_text))
+            total_weeks = parse_week_count(str(weeks_text))
+            if start_date.weekday() != 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            return SemesterSettings(DEFAULT_SEMESTER_START, DEFAULT_SEMESTER_WEEKS)
+        return SemesterSettings(start_date, total_weeks)
+
+    def _save_semester_settings(self) -> None:
+        self.settings_store.setValue(
+            "semester/start_date",
+            format_input_date(self.semester_settings.start_date),
+        )
+        self.settings_store.setValue(
+            "semester/total_weeks",
+            str(self.semester_settings.total_weeks),
+        )
+        self.settings_store.sync()
+
+    def _configure_inputs(self) -> None:
+        for text_box in (
+            self.ui.settingsSemesterActionDateTextBox,
+            self.ui.settingsSemesterActionTextBox,
+        ):
+            text_box.setAcceptRichText(False)
+            text_box.setTabChangesFocus(True)
+            text_box.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        self.ui.settingsSemesterActionDateTextBox.setPlaceholderText("YYYY-MM-DD")
+        self.ui.settingsSemesterActionTextBox.setPlaceholderText("17")
+
+    def _connect_actions(self) -> None:
+        self.ui.mainButtonSchedule.clicked.connect(
+            lambda: self._show_main_page(self.ui.pageSchedule)
+        )
+        self.ui.mainButtonGroups.clicked.connect(
+            lambda: self._show_main_page(self.ui.pageGroups)
+        )
+        self.ui.mainButtonSettings.clicked.connect(self._show_settings_home)
+
+        self.ui.settingsAlternativeButtonSchedule.clicked.connect(
+            lambda: self._show_settings_page(self.ui.pageSettingsSchedule)
+        )
+        self.ui.settingsAlternativeButtonGroups.clicked.connect(
+            lambda: self._show_settings_page(self.ui.pageSettingsGroups)
+        )
+        self.ui.settingsAlternativeButtonStudents.clicked.connect(
+            lambda: self._show_settings_page(self.ui.pageSettingsStudents)
+        )
+        self.ui.settingsAlternativeButtonSemester.clicked.connect(
+            lambda: self._show_settings_page(self.ui.pageSettingsSemester)
+        )
+
+        self.ui.scheduleDateButtonLeft.clicked.connect(lambda: self.move_week(-1))
+        self.ui.scheduleDateButtonRight.clicked.connect(lambda: self.move_week(1))
+        self.ui.scheduleDateButtonToday.clicked.connect(self.go_to_today)
+
+        self.ui.settingsSemesterActionWeekChangeButtonIncrease.clicked.connect(
+            lambda: self.change_semester_week_input(1)
+        )
+        self.ui.settingsSemesterActionWeekChangeButtonDecrease.clicked.connect(
+            lambda: self.change_semester_week_input(-1)
+        )
+        self.ui.settingsSemesterActionSaveButton.clicked.connect(
+            self.apply_semester_settings
+        )
+
+        self.ui.settingsScheduleChangeActionButton.clicked.connect(
+            lambda: self.show_schedule_dialog()
+        )
+        self.ui.settingsGroupsChangeActionButton.clicked.connect(
+            lambda: self.show_group_dialog()
+        )
+        self.ui.settingsStudentsChangeActionButton.clicked.connect(
+            lambda: self.show_student_dialog()
+        )
+        self.ui.settingsStudentsChangeChooseButton.clicked.connect(
+            self.show_student_filter_menu
+        )
+
+    def _show_main_page(self, page: QWidget) -> None:
+        self.ui.mainWidget.setCurrentWidget(page)
+        self._sync_nav_state()
+
+    def _show_settings_home(self) -> None:
+        self.ui.mainWidget.setCurrentWidget(self.ui.pageSettings)
+        self.ui.settingsWidget.setCurrentWidget(self.ui.pageSettingsSchedule)
+        self._sync_nav_state()
+
+    def _show_settings_page(self, page: QWidget) -> None:
+        self.ui.settingsWidget.setCurrentWidget(page)
+        self._sync_nav_state()
+
+    def _sync_nav_state(self) -> None:
+        active_main = {
+            self.ui.mainButtonSchedule: self.ui.mainWidget.currentWidget()
+            == self.ui.pageSchedule,
+            self.ui.mainButtonGroups: self.ui.mainWidget.currentWidget()
+            == self.ui.pageGroups,
+            self.ui.mainButtonSettings: self.ui.mainWidget.currentWidget()
+            == self.ui.pageSettings,
+        }
+        for button, active in active_main.items():
+            self._set_active_property(button, active)
+
+        active_settings = {
+            self.ui.settingsAlternativeButtonSchedule: self.ui.settingsWidget.currentWidget()
+            == self.ui.pageSettingsSchedule,
+            self.ui.settingsAlternativeButtonGroups: self.ui.settingsWidget.currentWidget()
+            == self.ui.pageSettingsGroups,
+            self.ui.settingsAlternativeButtonStudents: self.ui.settingsWidget.currentWidget()
+            == self.ui.pageSettingsStudents,
+            self.ui.settingsAlternativeButtonSemester: self.ui.settingsWidget.currentWidget()
+            == self.ui.pageSettingsSemester,
+        }
+        for button, active in active_settings.items():
+            self._set_active_property(button, active)
+
+    def _set_active_property(self, widget: QWidget, active: bool) -> None:
+        widget.setProperty("active", active)
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+
+    def move_week(self, delta: int) -> None:
+        next_week = self.selected_week_start + timedelta(weeks=delta)
+        self.selected_week_start = clamp_week_start(next_week, self.semester_settings)
+        self.render_schedule()
+
+    def go_to_today(self) -> None:
+        self.selected_week_start = clamp_week_start(
+            monday_for(date.today()),
+            self.semester_settings,
+        )
+        self.render_schedule()
+
+    def change_semester_week_input(self, delta: int) -> None:
+        try:
+            current = parse_week_count(
+                self.ui.settingsSemesterActionTextBox.toPlainText() or "1"
+            )
+        except ValueError:
+            current = self.semester_settings.total_weeks
+        current = max(1, min(52, current + delta))
+        self.ui.settingsSemesterActionTextBox.setPlainText(str(current))
+
+    def apply_semester_settings(self) -> None:
+        try:
+            start_date = parse_date_input(
+                self.ui.settingsSemesterActionDateTextBox.toPlainText()
+            )
+            total_weeks = parse_week_count(
+                self.ui.settingsSemesterActionTextBox.toPlainText()
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Semester settings", str(exc))
+            return
+
+        if start_date.weekday() != 0:
+            QMessageBox.warning(
+                self,
+                "Semester settings",
+                "Semester start date must be a Monday.",
+            )
+            return
+
+        self.semester_settings = SemesterSettings(start_date, total_weeks)
+        self._save_semester_settings()
+        self.selected_week_start = clamp_week_start(
+            self.selected_week_start,
+            self.semester_settings,
+        )
+        self.repository.ensure_lessons_for_semester(self.semester_settings)
+        self._populate_semester_inputs()
+        self.refresh_all()
+
+    def _populate_semester_inputs(self) -> None:
+        self.ui.settingsSemesterActionDateTextBox.setPlainText(
+            format_input_date(self.semester_settings.start_date)
+        )
+        self.ui.settingsSemesterActionTextBox.setPlainText(
+            str(self.semester_settings.total_weeks)
+        )
+
+    def update_semester_info_label(self) -> None:
+        self.ui.settingsSemesterTip2Label.setText(
+            "Current Semester Information\n\n"
+            f"Start Date: {format_long_date(self.semester_settings.start_date)}\n\n"
+            f"End Date: {format_long_date(self.semester_settings.end_date)}\n\n"
+            f"Total Weeks: {self.semester_settings.total_weeks}"
+        )
+
+    def render_schedule(self) -> None:
+        week_number = week_number_for(self.selected_week_start, self.semester_settings)
+        week_type = week_type_for_number(week_number)
+
+        self.ui.scheduleDateLabelsDateLabelWeek.setText(
+            f"Week {week_number}" if week_number else "Outside Semester"
+        )
+        self.ui.scheduleDateLabelsDateLabelDate.setText(
+            format_week_range(self.selected_week_start)
+        )
+        self.ui.scheduleDateLabelsOddityLabel.setText(week_type_label(week_type))
+        self.ui.scheduleDateButtonLeft.setEnabled(
+            self.selected_week_start > self.semester_settings.first_week_start
+        )
+        self.ui.scheduleDateButtonRight.setEnabled(
+            self.selected_week_start < self.semester_settings.last_week_start
+        )
+
+        clear_layout(self.ui.scheduleLessonsLesson)
+        lessons_by_day: dict[int, list[Lesson]] = {index: [] for index in range(7)}
+        for lesson in self.repository.lessons_for_week(
+            self.selected_week_start,
+            week_type,
+        ):
+            lessons_by_day[lesson.date.weekday()].append(lesson)
+
+        today = date.today()
+        for column, day_name in enumerate(DAY_NAMES):
+            current_day = self.selected_week_start + timedelta(days=column)
+            header = QLabel(f"{day_name.upper()}\n{current_day.day}")
+            header.setObjectName(
+                "ScheduleDayHeaderActive"
+                if current_day == today
+                else "ScheduleDayHeader"
+            )
+            header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.ui.scheduleLessonsLesson.addWidget(header, 0, column)
+
+            day_container = QWidget()
+            day_container.setObjectName("ScheduleDayColumn")
+            day_layout = QVBoxLayout(day_container)
+            day_layout.setContentsMargins(0, 0, 0, 0)
+            day_layout.setSpacing(14)
+            day_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+            day_lessons = sorted(
+                lessons_by_day[column],
+                key=lambda item: item.schedule.time,
+            )
+            if day_lessons:
+                for lesson in day_lessons:
+                    card = LessonCard(lesson, self.repository.lesson_groups_text(lesson))
+                    card.clicked.connect(self.show_lesson_detail)
+                    day_layout.addWidget(card)
+            else:
+                empty = QLabel("No lessons")
+                empty.setObjectName("NoLessonsCard")
+                empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                day_layout.addWidget(empty)
+            day_layout.addStretch()
+            self.ui.scheduleLessonsLesson.addWidget(day_container, 1, column)
+            self.ui.scheduleLessonsLesson.setColumnStretch(column, 1)
+
+    def render_groups(self) -> None:
+        clear_layout(self.ui.groupsFreeSpace)
+        scroll, grid = self._make_scroll_grid()
+        for index, group in enumerate(self.repository.list_groups()):
+            card = GroupCard(group, self.repository.group_stats(group))
+            card.clicked.connect(self.show_group_detail)
+            grid.addWidget(card, index // 2, index % 2)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        self._add_single_widget(self.ui.groupsFreeSpace, scroll)
+
+    def render_settings_schedules(self) -> None:
+        clear_layout(self.ui.settingsScheduleFreeSpace)
+        scroll, layout = self._make_scroll_vbox()
+        schedules = sorted(
+            self.repository.list_schedules(),
+            key=lambda item: (day_index(item.day), item.time),
+        )
+        for schedule in schedules:
+            card = ScheduleTemplateCard(
+                schedule,
+                self.repository.schedule_topic(schedule),
+                self.repository.schedule_groups_text(schedule),
+            )
+            card.edit_clicked.connect(self.show_schedule_dialog)
+            card.delete_clicked.connect(self.delete_schedule)
+            layout.addWidget(card)
+        layout.addStretch()
+        self._add_single_widget(self.ui.settingsScheduleFreeSpace, scroll)
+
+    def render_settings_groups(self) -> None:
+        clear_layout(self.ui.settingsGroupsFreeSpace)
+        scroll, grid = self._make_scroll_grid()
+        for index, group in enumerate(self.repository.list_groups()):
+            card = GroupCard(
+                group,
+                self.repository.group_stats(group),
+                compact=True,
+                actions=True,
+            )
+            card.clicked.connect(self.show_group_detail)
+            card.edit_clicked.connect(self.show_group_dialog)
+            card.delete_clicked.connect(self.delete_group)
+            grid.addWidget(card, index // 2, index % 2)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        self._add_single_widget(self.ui.settingsGroupsFreeSpace, scroll)
+
+    def render_settings_students(self) -> None:
+        clear_layout(self.ui.settingsStudentsFreeSpace)
+        scroll, layout = self._make_scroll_vbox()
+        students = self.repository.list_students(self.student_filter_group_id)
+        for student in students:
+            card = StudentCard(
+                student,
+                self.repository.full_student_name(student),
+                student.group.name,
+            )
+            card.edit_clicked.connect(self.show_student_dialog)
+            card.delete_clicked.connect(self.delete_student)
+            layout.addWidget(card)
+        layout.addStretch()
+        self._add_single_widget(self.ui.settingsStudentsFreeSpace, scroll)
+
+    def show_student_filter_menu(self) -> None:
+        menu = QMenu(self)
+        all_action = menu.addAction("All Groups")
+        all_action.triggered.connect(lambda: self.set_student_filter(None, "All Groups"))
+        for group in self.repository.list_groups():
+            action = menu.addAction(group.name)
+            action.triggered.connect(
+                lambda checked=False, current=group: self.set_student_filter(
+                    current.id,
+                    current.name,
+                )
+            )
+        menu.exec(self.ui.settingsStudentsChangeChooseButton.mapToGlobal(
+            self.ui.settingsStudentsChangeChooseButton.rect().bottomLeft()
+        ))
+
+    def set_student_filter(self, group_id: int | None, label: str) -> None:
+        self.student_filter_group_id = group_id
+        self.ui.settingsStudentsChangeChooseButton.setText(label)
+        self.render_settings_students()
+
+    def show_lesson_detail(self, lesson: Lesson) -> None:
+        page = QWidget()
+        page.setObjectName("DetailPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(84, 32, 84, 36)
+        layout.setSpacing(22)
+
+        back = QPushButton("<  Back to Schedule")
+        back.setObjectName("BackButton")
+        back.clicked.connect(lambda: self._show_main_page(self.ui.pageSchedule))
+        layout.addWidget(back, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        header = QFrame()
+        header.setObjectName("DetailHeader")
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(28, 24, 28, 24)
+        header_layout.setSpacing(12)
+
+        top = QHBoxLayout()
+        title = QLabel(lesson.topic or "Untitled lesson")
+        title.setObjectName("DetailTitle")
+        type_label = QLabel(lesson.schedule.type)
+        type_label.setObjectName("DarkBadgeLarge")
+        type_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        edit_button = QPushButton("Edit")
+        edit_button.setObjectName("CardEditButton")
+        edit_button.clicked.connect(lambda: self.show_schedule_dialog(lesson.schedule))
+        top.addWidget(title)
+        top.addStretch()
+        top.addWidget(type_label)
+        top.addWidget(edit_button)
+
+        meta = QLabel(
+            f"{format_long_date(lesson.date)} ({DAY_NAMES[lesson.date.weekday()]})  "
+            f"{lesson.schedule.time.strftime('%H:%M')}"
+        )
+        meta.setObjectName("DetailMeta")
+        groups = QLabel(f"Groups: {self.repository.lesson_groups_text(lesson)}")
+        groups.setObjectName("DetailMeta")
+
+        header_layout.addLayout(top)
+        header_layout.addWidget(meta)
+        header_layout.addWidget(groups)
+        layout.addWidget(header)
+
+        summary = self.repository.lesson_attendance_summary(lesson)
+        stats = QHBoxLayout()
+        stats.setSpacing(18)
+        stats.addWidget(make_metric("Total Students", summary["total"], "MetricWhite"))
+        stats.addWidget(make_metric("Present", summary["present"], "MetricGreen"))
+        stats.addWidget(make_metric("Absent", summary["absent"], "MetricRed"))
+        stats.addWidget(make_metric("Attendance Rate", f"{summary['rate']}%", "MetricBlue"))
+        layout.addLayout(stats)
+
+        table = self._make_table("Student Details")
+        table_layout = table.layout()
+        table_layout.addWidget(
+            make_table_row(
+                ["Student Name", "Group", "Attendance", "Comments", "Actions"],
+                "TableHeader",
+            )
+        )
+        for student in self.repository.students_for_lesson(lesson):
+            attendance = self.repository.attendance_for(lesson, student)
+            visited = attendance is not None and attendance.is_visited
+            student_name = QLabel(self.repository.full_student_name(student))
+            student_name.setObjectName("LinkLabel")
+            table_layout.addWidget(
+                make_table_row(
+                    [
+                        student_name,
+                        student.group.name,
+                        "Present" if visited else "Absent",
+                        "-",
+                        "View Profile",
+                    ]
+                )
+            )
+        layout.addWidget(table)
+        layout.addStretch()
+        self._show_detail_page(page)
+
+    def show_group_detail(self, group: Group) -> None:
+        page = QWidget()
+        page.setObjectName("DetailPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(84, 32, 84, 36)
+        layout.setSpacing(22)
+
+        back = QPushButton("<  Back to Groups")
+        back.setObjectName("BackButton")
+        back.clicked.connect(lambda: self._show_main_page(self.ui.pageGroups))
+        layout.addWidget(back, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        header = QFrame()
+        header.setObjectName("DetailHeader")
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(28, 24, 28, 24)
+        title = QLabel(f"Group {group.name}")
+        title.setObjectName("DetailTitle")
+        subtitle = QLabel(f"{len(group.students)} students")
+        subtitle.setObjectName("DetailMeta")
+        header_layout.addWidget(title)
+        header_layout.addWidget(subtitle)
+        layout.addWidget(header)
+
+        stats_data = self.repository.group_stats(group)
+        stats = QHBoxLayout()
+        stats.setSpacing(18)
+        stats.addWidget(make_metric("Group Average", stats_data["overall"], "MetricBlue"))
+        stats.addWidget(make_metric("Lab Work Average", stats_data["lab"], "MetricGreen"))
+        stats.addWidget(make_metric("Test Average", stats_data["test"], "MetricRed"))
+        stats.addWidget(make_metric("Attendance Rate", f"{stats_data['attendance']}%", "MetricPurple"))
+        layout.addLayout(stats)
+
+        table = self._make_table("Students")
+        table_layout = table.layout()
+        table_layout.addWidget(
+            make_table_row(
+                ["Name", "Overall Average", "Lab Average", "Test Average", "Attendance", "Actions"],
+                "TableHeader",
+            )
+        )
+        for student in sorted(group.students, key=lambda item: (item.surname, item.first_name)):
+            stats = self.repository.student_stats(student)
+            name = QLabel(self.repository.full_student_name(student))
+            name.setObjectName("LinkLabel")
+            table_layout.addWidget(
+                make_table_row(
+                    [
+                        name,
+                        stats["overall"],
+                        stats["lab"],
+                        stats["test"],
+                        f"{stats['attendance']}%",
+                        "View Profile",
+                    ]
+                )
+            )
+        layout.addWidget(table)
+
+        lessons_box = self._make_table("Group Lessons")
+        lessons_layout = lessons_box.layout()
+        for link in sorted(
+            group.schedule_links,
+            key=lambda item: (day_index(item.schedule.day), item.schedule.time),
+        ):
+            schedule = link.schedule
+            held_count = sum(1 for lesson in schedule.lessons if lesson.date <= date.today())
+            lessons_layout.addWidget(
+                self._make_group_lesson_row(
+                    self.repository.schedule_topic(schedule),
+                    schedule,
+                    held_count,
+                )
+            )
+        layout.addWidget(lessons_box)
+        self._show_detail_page(page)
+
+    def _make_group_lesson_row(
+        self,
+        topic: str,
+        schedule: Schedule,
+        held_count: int,
+    ) -> QFrame:
+        row = QFrame()
+        row.setObjectName("SettingsCard")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(22, 16, 22, 16)
+        text = QVBoxLayout()
+        title = QLabel(f"{topic}  {schedule.type}")
+        title.setObjectName("SettingsCardTitle")
+        info = QLabel(
+            f"{schedule.time.strftime('%H:%M')} on {schedule.day}s "
+            f"({schedule.odd_or_even} weeks)"
+        )
+        info.setObjectName("SettingsCardSubtitle")
+        dates = QLabel(
+            ", ".join(
+                lesson.date.strftime("%b %d")
+                for lesson in sorted(schedule.lessons, key=lambda item: item.date)
+                if lesson.date <= date.today()
+            )
+            or "No held lessons yet"
+        )
+        dates.setObjectName("SettingsCardText")
+        text.addWidget(title)
+        text.addWidget(info)
+        text.addWidget(dates)
+        badge = QLabel(f"{held_count} lessons held")
+        badge.setObjectName("DarkBadge")
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge.setFixedWidth(130)
+        layout.addLayout(text)
+        layout.addStretch()
+        layout.addWidget(badge)
+        return row
+
+    def _show_detail_page(self, page: QWidget) -> None:
+        if self.detail_page is not None:
+            self.ui.mainWidget.removeWidget(self.detail_page)
+            self.detail_page.deleteLater()
+        self.detail_page = page
+        self.ui.mainWidget.addWidget(page)
+        self.ui.mainWidget.setCurrentWidget(page)
+        self._sync_nav_state()
+
+    def show_schedule_dialog(self, schedule: Schedule | None = None) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Schedule Template")
+        form = QFormLayout(dialog)
+
+        topic_input = QLineEdit()
+        day_input = QComboBox()
+        day_input.addItems(DAY_NAMES)
+        time_input = QTimeEdit()
+        time_input.setDisplayFormat("HH:mm")
+        week_input = QComboBox()
+        week_input.addItems(["even", "odd"])
+        type_input = QComboBox()
+        type_input.addItems(["Seminar", "Lab Work", "Control Work"])
+        assessment_input = QCheckBox("Assessment lesson")
+        group_input = QListWidget()
+        group_input.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+
+        groups = self.repository.list_groups()
+        selected_group_ids = set()
+        if schedule is not None:
+            topic_input.setText(self.repository.schedule_topic(schedule))
+            day_input.setCurrentText(schedule.day)
+            time_input.setTime(QTime(schedule.time.hour, schedule.time.minute))
+            week_input.setCurrentText(schedule.odd_or_even)
+            type_input.setCurrentText(schedule.type)
+            assessment_input.setChecked(schedule.is_assessment)
+            selected_group_ids = {link.group_id for link in schedule.group_links}
+
+        for group in groups:
+            item = QListWidgetItem(group.name)
+            item.setData(Qt.ItemDataRole.UserRole, group)
+            if group.id in selected_group_ids:
+                item.setSelected(True)
+            group_input.addItem(item)
+
+        form.addRow("Topic", topic_input)
+        form.addRow("Day", day_input)
+        form.addRow("Time", time_input)
+        form.addRow("Week", week_input)
+        form.addRow("Type", type_input)
+        form.addRow("", assessment_input)
+        form.addRow("Groups", group_input)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        selected_groups = [
+            item.data(Qt.ItemDataRole.UserRole)
+            for item in group_input.selectedItems()
+        ]
+        if not selected_groups:
+            QMessageBox.warning(self, "Schedule Template", "Select at least one group.")
+            return
+
+        lesson_time = time(time_input.time().hour(), time_input.time().minute())
+        topic = topic_input.text().strip() or "Untitled lesson"
+        if schedule is None:
+            self.repository.create_schedule(
+                topic,
+                selected_groups,
+                day_input.currentText(),
+                lesson_time,
+                week_input.currentText(),
+                type_input.currentText(),
+                assessment_input.isChecked(),
+                self.semester_settings,
+            )
+        else:
+            self.repository.update_schedule(
+                schedule,
+                topic,
+                selected_groups,
+                day_input.currentText(),
+                lesson_time,
+                week_input.currentText(),
+                type_input.currentText(),
+                assessment_input.isChecked(),
+                self.semester_settings,
+            )
+        self.refresh_all()
+
+    def delete_schedule(self, schedule: Schedule) -> None:
+        if self._confirm("Delete schedule template?"):
+            self.repository.delete_schedule(schedule)
+            self.refresh_all()
+
+    def show_group_dialog(self, group: Group | None = None) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Group")
+        form = QFormLayout(dialog)
+        name_input = QLineEdit(group.name if group is not None else "")
+        speciality_input = QLineEdit(group.speciality or "" if group is not None else "")
+        form.addRow("Name", name_input)
+        form.addRow("Speciality", speciality_input)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if not name_input.text().strip():
+            QMessageBox.warning(self, "Group", "Group name is required.")
+            return
+        if group is None:
+            self.repository.create_group(name_input.text(), speciality_input.text())
+        else:
+            self.repository.update_group(group, name_input.text(), speciality_input.text())
+        self.refresh_all()
+
+    def delete_group(self, group: Group) -> None:
+        if self._confirm(f"Delete group {group.name}?"):
+            self.repository.delete_group(group)
+            self.refresh_all()
+
+    def show_student_dialog(self, student: Student | None = None) -> None:
+        groups = self.repository.list_groups()
+        if not groups:
+            QMessageBox.warning(self, "Student", "Create a group first.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Student")
+        form = QFormLayout(dialog)
+        group_input = QComboBox()
+        for group in groups:
+            group_input.addItem(group.name, group)
+        first_name_input = QLineEdit(student.first_name if student is not None else "")
+        surname_input = QLineEdit(student.surname if student is not None else "")
+        email_input = QLineEdit(student.bmstu_email or "" if student is not None else "")
+
+        if student is not None:
+            for index in range(group_input.count()):
+                if group_input.itemData(index).id == student.group_id:
+                    group_input.setCurrentIndex(index)
+                    break
+
+        form.addRow("Group", group_input)
+        form.addRow("First Name", first_name_input)
+        form.addRow("Surname", surname_input)
+        form.addRow("Email", email_input)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if not first_name_input.text().strip() or not surname_input.text().strip():
+            QMessageBox.warning(self, "Student", "First name and surname are required.")
+            return
+        group = group_input.currentData()
+        if student is None:
+            self.repository.create_student(
+                group,
+                first_name_input.text(),
+                surname_input.text(),
+                email_input.text(),
+            )
+        else:
+            self.repository.update_student(
+                student,
+                group,
+                first_name_input.text(),
+                surname_input.text(),
+                email_input.text(),
+            )
+        self.repository.ensure_attendance_and_marks()
+        self.refresh_all()
+
+    def delete_student(self, student: Student) -> None:
+        if self._confirm(f"Delete student {self.repository.full_student_name(student)}?"):
+            self.repository.delete_student(student)
+            self.refresh_all()
+
+    def _confirm(self, text: str) -> bool:
+        return (
+            QMessageBox.question(
+                self,
+                "Confirm",
+                text,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            == QMessageBox.StandardButton.Yes
+        )
+
+    def _make_table(self, title: str) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("DetailTable")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(10)
+        label = QLabel(title)
+        label.setObjectName("SectionTitle")
+        layout.addWidget(label)
+        return frame
+
+    def _make_scroll_vbox(self) -> tuple[QScrollArea, QVBoxLayout]:
+        scroll = QScrollArea()
+        scroll.setObjectName("ContentScroll")
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        scroll.setWidget(content)
+        return scroll, layout
+
+    def _make_scroll_grid(self) -> tuple[QScrollArea, QGridLayout]:
+        scroll = QScrollArea()
+        scroll.setObjectName("ContentScroll")
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        layout = QGridLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setHorizontalSpacing(18)
+        layout.setVerticalSpacing(18)
+        scroll.setWidget(content)
+        return scroll, layout
+
+    def _add_single_widget(self, layout, widget: QWidget) -> None:
+        if isinstance(layout, QFormLayout):
+            layout.addRow(widget)
+        else:
+            layout.addWidget(widget)
+
+    def _apply_styles(self) -> None:
+        self.setStyleSheet(
+            """
             QWidget {
                 background-color: #ffffff;
                 color: #07152d;
@@ -37,7 +920,8 @@ class MainWindow(QMainWindow):
             QStackedWidget#mainWidget,
             QWidget#pageSchedule,
             QWidget#pageGroups,
-            QWidget#pageSettings {
+            QWidget#pageSettings,
+            QWidget#DetailPage {
                 background-color: #eaf2ff;
             }
 
@@ -52,7 +936,7 @@ class MainWindow(QMainWindow):
             QLabel {
                 color: #07152d;
                 background: transparent;
-                font-size: 20px;
+                font-size: 18px;
                 font-weight: 400;
             }
 
@@ -62,19 +946,12 @@ class MainWindow(QMainWindow):
                 border: none;
                 border-radius: 8px;
                 padding: 10px 18px;
-                min-height: 44px;
-                font-size: 18px;
-                font-weight: 400;
+                min-height: 42px;
+                font-size: 17px;
             }
 
             QPushButton:hover {
                 background-color: #d9dee7;
-            }
-
-            QPushButton:pressed,
-            QPushButton:focus {
-                background-color: #1f5cf4;
-                color: #ffffff;
             }
 
             QPushButton#mainButtonSchedule,
@@ -87,54 +964,28 @@ class MainWindow(QMainWindow):
                 border-radius: 8px;
             }
 
-            QPushButton#mainButtonSchedule:hover,
-            QPushButton#mainButtonGroups:hover,
-            QPushButton#mainButtonSettings:hover {
-                background-color: #d8dde5;
-            }
-
-            QPushButton#mainButtonSchedule:pressed,
-            QPushButton#mainButtonGroups:pressed,
-            QPushButton#mainButtonSettings:pressed,
-            QPushButton#mainButtonSchedule:focus,
-            QPushButton#mainButtonGroups:focus,
-            QPushButton#mainButtonSettings:focus {
+            QPushButton#mainButtonSchedule[active="true"],
+            QPushButton#mainButtonGroups[active="true"],
+            QPushButton#mainButtonSettings[active="true"] {
                 background-color: #1f5cf4;
                 color: #ffffff;
             }
 
             QPushButton#scheduleDateButtonLeft,
-            QPushButton#scheduleDateButtonRight {
-                background-color: #ffffff;
-                color: #050b18;
-                border: 1px solid #dce1ea;
-                min-width: 42px;
-                min-height: 38px;
-                font-size: 22px;
-                padding: 8px 12px;
-            }
-
-            QPushButton#scheduleDateButtonToday {
+            QPushButton#scheduleDateButtonRight,
+            QPushButton#scheduleDateButtonToday,
+            QPushButton#BackButton {
                 background-color: #ffffff;
                 color: #050b18;
                 border: 1px solid #dce1ea;
                 min-height: 38px;
                 font-size: 16px;
-                padding: 8px 20px;
             }
 
-            QPushButton#scheduleDateButtonLeft:hover,
-            QPushButton#scheduleDateButtonRight:hover,
-            QPushButton#scheduleDateButtonToday:hover,
-            QPushButton#scheduleDateButtonLeft:focus,
-            QPushButton#scheduleDateButtonRight:focus,
-            QPushButton#scheduleDateButtonToday:focus,
-            QPushButton#scheduleDateButtonLeft:pressed,
-            QPushButton#scheduleDateButtonRight:pressed,
-            QPushButton#scheduleDateButtonToday:pressed {
-                background-color: #f8fafc;
-                color: #050b18;
-                border: 1px solid #cfd6e1;
+            QPushButton#scheduleDateButtonLeft:disabled,
+            QPushButton#scheduleDateButtonRight:disabled {
+                color: #a0a9b8;
+                background-color: #f7f8fb;
             }
 
             QLabel#scheduleDateLabelsDateLabelWeek {
@@ -155,30 +1006,79 @@ class MainWindow(QMainWindow):
                 font-size: 22px;
             }
 
-            QLabel#scheduleLessonsLessonMonday,
-            QLabel#scheduleLessonLabelMonday,
-            QLabel#scheduleLessonLabelTuesday,
-            QLabel#scheduleLessonLabelThursday,
-            QLabel#scheduleLessonLabelSaturday,
-            QLabel#scheduleLessonLabelSunday {
+            QLabel#ScheduleDayHeader,
+            QLabel#ScheduleDayHeaderActive {
                 background-color: #ffffff;
                 color: #213652;
                 border: 1px solid #dfe4ec;
                 border-radius: 10px;
-                padding: 18px;
-                min-height: 74px;
+                padding: 14px;
+                min-height: 82px;
                 font-size: 18px;
             }
 
-            QLabel#scheduleLessonLabelWednessday {
+            QLabel#ScheduleDayHeaderActive {
                 background-color: #1f5cf4;
                 color: #ffffff;
-                border: 1px solid #1f5cf4;
+                border-color: #1f5cf4;
+                font-weight: 700;
+            }
+
+            QWidget#ScheduleDayColumn {
+                background: transparent;
+            }
+
+            QLabel#NoLessonsCard {
+                background-color: #f4f7fd;
+                color: #8b97aa;
+                border: 1px solid #dfe4ec;
                 border-radius: 10px;
                 padding: 18px;
-                min-height: 74px;
-                font-size: 18px;
+                min-height: 64px;
+            }
+
+            QFrame#LessonCard,
+            QFrame#GroupCard,
+            QFrame#GroupCardCompact,
+            QFrame#SettingsCard,
+            QFrame#DetailHeader,
+            QFrame#DetailTable {
+                background-color: #ffffff;
+                border: 1px solid #dfe4ec;
+                border-radius: 10px;
+            }
+
+            QFrame#LessonCard:hover,
+            QFrame#GroupCard:hover,
+            QFrame#GroupCardCompact:hover {
+                border-color: #bfc9d8;
+            }
+
+            QLabel#LessonCardTime {
+                color: #07152d;
+                font-size: 24px;
                 font-weight: 700;
+            }
+
+            QLabel#LessonCardGroups,
+            QLabel#LinkLabel {
+                color: #075cff;
+                font-size: 17px;
+            }
+
+            QLabel#LessonCardTopic {
+                color: #10213a;
+                font-size: 18px;
+            }
+
+            QLabel#LessonCardType,
+            QLabel#SmallPill {
+                background-color: #ffffff;
+                color: #050b18;
+                border: 1px solid #dfe4ec;
+                border-radius: 8px;
+                padding: 4px 10px;
+                font-size: 14px;
             }
 
             QLabel#groupsTip1,
@@ -217,21 +1117,10 @@ class MainWindow(QMainWindow):
                 border-radius: 8px;
             }
 
-            QPushButton#settingsAlternativeButtonSchedule:hover,
-            QPushButton#settingsAlternativeButtonGroups:hover,
-            QPushButton#settingsAlternativeButtonStudents:hover,
-            QPushButton#settingsAlternativeButtonSemester:hover {
-                background-color: #f2f2f4;
-            }
-
-            QPushButton#settingsAlternativeButtonSchedule:focus,
-            QPushButton#settingsAlternativeButtonGroups:focus,
-            QPushButton#settingsAlternativeButtonStudents:focus,
-            QPushButton#settingsAlternativeButtonSemester:focus,
-            QPushButton#settingsAlternativeButtonSchedule:pressed,
-            QPushButton#settingsAlternativeButtonGroups:pressed,
-            QPushButton#settingsAlternativeButtonStudents:pressed,
-            QPushButton#settingsAlternativeButtonSemester:pressed {
+            QPushButton#settingsAlternativeButtonSchedule[active="true"],
+            QPushButton#settingsAlternativeButtonGroups[active="true"],
+            QPushButton#settingsAlternativeButtonStudents[active="true"],
+            QPushButton#settingsAlternativeButtonSemester[active="true"] {
                 background-color: #ffffff;
                 color: #050b18;
             }
@@ -246,24 +1135,7 @@ class MainWindow(QMainWindow):
                 color: #ffffff;
                 border-radius: 8px;
                 min-height: 40px;
-                font-size: 17px;
-                padding: 8px 18px;
-            }
-
-            QPushButton#settingsScheduleChangeActionButton {
-                max-width: 280px;
-            }
-
-            QPushButton#settingsGroupsChangeActionButton {
-                max-width: 160px;
-            }
-
-            QPushButton#settingsStudentsChangeActionButton {
-                max-width: 170px;
-            }
-
-            QPushButton#settingsSemesterActionSaveButton {
-                max-width: 190px;
+                font-size: 16px;
             }
 
             QPushButton#settingsSemesterActionWeekChangeButtonIncrease,
@@ -271,51 +1143,36 @@ class MainWindow(QMainWindow):
                 min-width: 48px;
                 max-width: 58px;
                 font-size: 24px;
-                padding: 4px 14px;
             }
 
-            QPushButton#settingsScheduleChangeActionButton:hover,
-            QPushButton#settingsGroupsChangeActionButton:hover,
-            QPushButton#settingsStudentsChangeActionButton:hover,
-            QPushButton#settingsSemesterActionSaveButton:hover,
-            QPushButton#settingsSemesterActionWeekChangeButtonIncrease:hover,
-            QPushButton#settingsSemesterActionWeekChangeButtonDecrease:hover,
-            QPushButton#settingsScheduleChangeActionButton:focus,
-            QPushButton#settingsGroupsChangeActionButton:focus,
-            QPushButton#settingsStudentsChangeActionButton:focus,
-            QPushButton#settingsSemesterActionSaveButton:focus,
-            QPushButton#settingsSemesterActionWeekChangeButtonIncrease:focus,
-            QPushButton#settingsSemesterActionWeekChangeButtonDecrease:focus {
-                background-color: #0c1024;
-                color: #ffffff;
-            }
-
-            QPushButton#settingsStudentsChangeChooseButton {
-                background-color: #f2f2f4;
-                color: #050b18;
-                min-height: 42px;
-                max-width: 210px;
-                font-size: 16px;
-                padding: 8px 18px;
-            }
-
-            QPushButton#settingsStudentsChangeChooseButton:hover,
-            QPushButton#settingsStudentsChangeChooseButton:focus,
-            QPushButton#settingsStudentsChangeChooseButton:pressed {
+            QPushButton#CardEditButton {
                 background-color: #ffffff;
                 color: #050b18;
+                border: 1px solid #dfe4ec;
+                min-width: 70px;
+                font-size: 14px;
+            }
+
+            QPushButton#CardDeleteButton {
+                background-color: #ffffff;
+                color: #e11d48;
+                border: 1px solid #f2c8d1;
+                min-width: 76px;
+                font-size: 14px;
             }
 
             QTextEdit,
             QLineEdit,
-            QSpinBox {
+            QComboBox,
+            QTimeEdit,
+            QListWidget {
                 background-color: #ffffff;
                 color: #07152d;
                 border: 1px solid #dce1ea;
                 border-radius: 8px;
-                padding: 10px;
+                padding: 8px;
                 font-size: 16px;
-                min-height: 36px;
+                min-height: 34px;
             }
 
             QTextEdit#settingsSemesterActionDateTextBox,
@@ -323,74 +1180,118 @@ class MainWindow(QMainWindow):
                 max-height: 44px;
             }
 
-            QMenuBar {
-                background-color: #ffffff;
-                color: #07152d;
-                padding: 4px;
-                font-size: 13px;
-            }
-
-            QMenuBar::item:selected {
-                background-color: #e8eef8;
-                border-radius: 6px;
-            }
-
-            QMenu {
-                background-color: #ffffff;
-                color: #07152d;
-                border: 1px solid #dce1ea;
-                padding: 6px;
-            }
-
-            QScrollBar:vertical {
+            QScrollArea#ContentScroll {
                 background: transparent;
-                width: 10px;
-                margin: 0;
+                border: none;
             }
 
-            QScrollBar::handle:vertical {
-                background: #c8d2e4;
-                border-radius: 5px;
-                min-height: 30px;
+            QScrollArea#ContentScroll QWidget {
+                background: transparent;
             }
 
-            QScrollBar::handle:vertical:hover {
-                background: #aebbd0;
+            QLabel#RoundIcon,
+            QLabel#RoundIconMuted {
+                background-color: #dcebff;
+                color: #075cff;
+                border-radius: 27px;
+                font-size: 20px;
+                font-weight: 700;
             }
 
-            QScrollBar::add-line:vertical,
-            QScrollBar::sub-line:vertical {
-                height: 0;
+            QLabel#RoundIconMuted {
+                background-color: #f0f2f6;
+                color: #556070;
             }
-        """)
 
-        self.ui.mainButtonSchedule.clicked.connect(
-            lambda: self.ui.mainWidget.setCurrentWidget(self.ui.pageSchedule)
-        )
-        self.ui.mainButtonGroups.clicked.connect(
-            lambda: self.ui.mainWidget.setCurrentWidget(self.ui.pageGroups)
-        )
-        def _InitialFilteringSettings_():
-            self.ui.mainWidget.setCurrentWidget(self.ui.pageSettings)
-            self.ui.settingsWidget.setCurrentWidget(self.ui.pageSettingsSchedule)
+            QLabel#GroupCardTitle,
+            QLabel#SettingsCardTitle {
+                color: #050b18;
+                font-size: 24px;
+            }
 
-        self.ui.mainButtonSettings.clicked.connect(
-            _InitialFilteringSettings_
-        )
-        self.ui.settingsAlternativeButtonSchedule.clicked.connect(
-            lambda: self.ui.settingsWidget.setCurrentWidget(self.ui.pageSettingsSchedule)
-        )
-        self.ui.settingsAlternativeButtonSemester.clicked.connect(
-            lambda: self.ui.settingsWidget.setCurrentWidget(self.ui.pageSettingsSemester)
-        )
-        self.ui.settingsAlternativeButtonStudents.clicked.connect(
-            lambda: self.ui.settingsWidget.setCurrentWidget(self.ui.pageSettingsStudents)
-        )
-        self.ui.settingsAlternativeButtonGroups.clicked.connect(
-            lambda: self.ui.settingsWidget.setCurrentWidget(self.ui.pageSettingsGroups)
+            QLabel#GroupCardSubtitle,
+            QLabel#SettingsCardSubtitle,
+            QLabel#SettingsCardText,
+            QLabel#DetailMeta {
+                color: #2b3d58;
+                font-size: 16px;
+            }
+
+            QLabel#CardArrow {
+                color: #98a2b3;
+                font-size: 34px;
+            }
+
+            QLabel#DarkBadge,
+            QLabel#DarkBadgeLarge {
+                background-color: #030416;
+                color: #ffffff;
+                border-radius: 8px;
+                padding: 5px 10px;
+                font-size: 14px;
+            }
+
+            QLabel#DarkBadgeLarge {
+                font-size: 16px;
+                min-width: 96px;
+                min-height: 34px;
+            }
+
+            QFrame#MetricBlue,
+            QFrame#MetricGreen,
+            QFrame#MetricRed,
+            QFrame#MetricPurple,
+            QFrame#MetricWhite {
+                border-radius: 10px;
+                border: 1px solid #d6e1f2;
+                min-height: 110px;
+            }
+
+            QFrame#MetricBlue { background-color: #e7f1ff; }
+            QFrame#MetricGreen { background-color: #e9faef; }
+            QFrame#MetricRed { background-color: #fff0f0; }
+            QFrame#MetricPurple { background-color: #f6edff; }
+            QFrame#MetricWhite { background-color: #ffffff; }
+
+            QLabel#MetricTitle {
+                color: #33445f;
+                font-size: 16px;
+            }
+
+            QLabel#MetricValue {
+                color: #0f4eea;
+                font-size: 34px;
+            }
+
+            QLabel#DetailTitle {
+                color: #050b18;
+                font-size: 36px;
+            }
+
+            QLabel#SectionTitle {
+                color: #050b18;
+                font-size: 26px;
+                padding-bottom: 20px;
+            }
+
+            QFrame#TableHeader QLabel {
+                color: #050b18;
+                font-size: 18px;
+                font-weight: 700;
+            }
+
+            QFrame#TableRow {
+                background-color: #ffffff;
+                border-top: 1px solid #e5e7eb;
+            }
+
+            QFrame#TableRow QLabel {
+                font-size: 16px;
+            }
+            """
         )
 
-    def _apply_layout_visuals(self):
+    def _apply_layout_visuals(self) -> None:
         ui = self.ui
 
         ui.verticalLayout_2.setContentsMargins(0, 0, 0, 0)
@@ -414,13 +1315,23 @@ class MainWindow(QMainWindow):
         ui.scheduleDate.setStretch(0, 0)
         ui.scheduleDate.setStretch(1, 1)
         ui.scheduleDateButton.setSpacing(14)
-        ui.scheduleDate.setAlignment(ui.scheduleDateButton, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        ui.scheduleDate.setAlignment(ui.scheduleDateLabels, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        ui.scheduleDate.setAlignment(
+            ui.scheduleDateButton,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        )
+        ui.scheduleDate.setAlignment(
+            ui.scheduleDateLabels,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+        )
         ui.scheduleDateLabels.setSpacing(18)
         ui.scheduleDateLabels.setStretch(0, 1)
         ui.scheduleDateLabels.setStretch(1, 0)
-        ui.scheduleDateLabelsDate.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        ui.scheduleDateLabelsOddity.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        ui.scheduleDateLabelsDate.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        ui.scheduleDateLabelsOddity.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
 
         ui.scheduleLessons.setContentsMargins(0, 0, 0, 0)
         ui.scheduleLessons.setAlignment(ui.scheduleLessonsLesson, Qt.AlignmentFlag.AlignTop)
@@ -447,38 +1358,49 @@ class MainWindow(QMainWindow):
         ui.settingsAlternative.setStretch(1, 1)
         ui.settingsAlternativeAction.setSpacing(0)
 
-        for layout in (ui.verticalLayout_15, ui.verticalLayout_19, ui.verticalLayout_23, ui.verticalLayout_27):
+        for layout in (
+            ui.verticalLayout_15,
+            ui.verticalLayout_19,
+            ui.verticalLayout_23,
+            ui.verticalLayout_27,
+        ):
             layout.setContentsMargins(0, 0, 0, 0)
             layout.setSpacing(0)
 
         ui.settingsScheduleMain.setContentsMargins(0, 8, 0, 0)
         ui.settingsScheduleMain.setSpacing(20)
-        ui.settingsScheduleMain.setStretch(0, 0)
-        ui.settingsScheduleMain.setStretch(1, 1)
         ui.settingsScheduleChange.setSpacing(18)
         ui.settingsScheduleChange.setStretch(0, 1)
         ui.settingsScheduleChange.setStretch(1, 0)
-        ui.settingsScheduleChangeAction.setAlignment(ui.settingsScheduleChangeActionButton, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        ui.settingsScheduleChangeAction.setAlignment(
+            ui.settingsScheduleChangeActionButton,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop,
+        )
 
         ui.settingsGroupsMain.setContentsMargins(0, 8, 0, 0)
         ui.settingsGroupsMain.setSpacing(20)
-        ui.settingsGroupsMain.setStretch(0, 0)
-        ui.settingsGroupsMain.setStretch(1, 1)
         ui.settingsGroupsChange.setSpacing(18)
         ui.settingsGroupsChange.setStretch(0, 1)
         ui.settingsGroupsChange.setStretch(1, 0)
-        ui.settingsGroupsChangeAction.setAlignment(ui.settingsGroupsChangeActionButton, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        ui.settingsGroupsChangeAction.setAlignment(
+            ui.settingsGroupsChangeActionButton,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop,
+        )
 
         ui.settingsStudentsMain.setContentsMargins(0, 8, 0, 0)
         ui.settingsStudentsMain.setSpacing(20)
-        ui.settingsStudentsMain.setStretch(0, 0)
-        ui.settingsStudentsMain.setStretch(1, 1)
         ui.settingsStudentsChange.setSpacing(18)
         ui.settingsStudentsChange.setStretch(0, 0)
         ui.settingsStudentsChange.setStretch(1, 1)
         ui.settingsStudentsChange.setStretch(2, 0)
-        ui.settingsStudentsChangeChoose.setAlignment(ui.settingsStudentsChangeChooseButton, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        ui.settingsStudentsChangeAction.setAlignment(ui.settingsStudentsChangeActionButton, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        ui.settingsStudentsChangeChoose.setAlignment(
+            ui.settingsStudentsChangeChooseButton,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+        )
+        ui.settingsStudentsChangeAction.setAlignment(
+            ui.settingsStudentsChangeActionButton,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop,
+        )
 
         ui.SettingsSemesterMain.setContentsMargins(0, 8, 0, 0)
         ui.SettingsSemesterMain.setSpacing(22)
@@ -486,34 +1408,34 @@ class MainWindow(QMainWindow):
         ui.SettingsSemesterMain.setStretch(1, 0)
         ui.SettingsSemesterMain.setStretch(2, 1)
         ui.settingsSemesterAction.setSpacing(18)
-        ui.settingsSemesterAction.setStretch(0, 0)
-        ui.settingsSemesterAction.setStretch(1, 0)
-        ui.settingsSemesterAction.setStretch(2, 0)
         ui.settingsSemesterActionDate.setSpacing(8)
-        ui.settingsSemesterActionDate.setStretch(0, 0)
-        ui.settingsSemesterActionDate.setStretch(1, 0)
-        ui.settingsSemesterActionDate.setStretch(2, 0)
         ui.settingsSemesterActionWeek.setSpacing(14)
         ui.settingsSemesterActionWeek.setStretch(0, 1)
         ui.settingsSemesterActionWeek.setStretch(1, 0)
         ui.settingsSemesterActionWeekInput.setSpacing(8)
-        ui.settingsSemesterActionWeekInput.setStretch(0, 0)
-        ui.settingsSemesterActionWeekInput.setStretch(1, 0)
-        ui.settingsSemesterActionWeekInput.setStretch(2, 0)
         ui.settingsSemesterActionWeekChange.setSpacing(8)
-        ui.settingsSemesterActionWeekChange.setAlignment(ui.settingsSemesterActionWeekChangeButtonIncrease, Qt.AlignmentFlag.AlignLeft)
-        ui.settingsSemesterActionWeekChange.setAlignment(ui.settingsSemesterActionWeekChangeButtonDecrease, Qt.AlignmentFlag.AlignLeft)
-        ui.settingsSemesterActionSave.setAlignment(ui.settingsSemesterActionSaveButton, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        ui.settingsSemesterActionWeekChange.setAlignment(
+            ui.settingsSemesterActionWeekChangeButtonIncrease,
+            Qt.AlignmentFlag.AlignLeft,
+        )
+        ui.settingsSemesterActionWeekChange.setAlignment(
+            ui.settingsSemesterActionWeekChangeButtonDecrease,
+            Qt.AlignmentFlag.AlignLeft,
+        )
+        ui.settingsSemesterActionSave.setAlignment(
+            ui.settingsSemesterActionSaveButton,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+        )
 
 
-def main():
+def main() -> None:
     app = QApplication(sys.argv)
-
     window = MainWindow()
     window.resize(2000, 1200)
     window.show()
-
     sys.exit(app.exec())
 
 
-main()
+if __name__ == "__main__":
+    main()
+
