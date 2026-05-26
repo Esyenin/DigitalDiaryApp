@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from html import escape
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout
 
@@ -8,11 +10,19 @@ from app.models.lesson import Lesson
 
 class LessonCard(QFrame):
     clicked = Signal(object)
+    group_clicked = Signal(object)
 
     def __init__(self, lesson: Lesson, groups_text: str | None = None, parent=None):
         super().__init__(parent)
         self.lesson = lesson
         self.groups_text = groups_text or self._groups_text()
+        self.groups_by_id = {
+            str(link.group.id): link.group
+            for link in sorted(
+                self.lesson.schedule.group_links,
+                key=lambda item: item.group.name,
+            )
+        }
 
         self.setObjectName("LessonCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -41,9 +51,14 @@ class LessonCard(QFrame):
         top_layout.addStretch()
         top_layout.addWidget(self.marker)
 
-        self.group_label = QLabel(self.groups_text)
+        self.group_label = QLabel()
         self.group_label.setObjectName("LessonCardGroups")
+        self.group_label.setTextFormat(Qt.TextFormat.RichText)
+        self.group_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        self.group_label.setOpenExternalLinks(False)
         self.group_label.setWordWrap(True)
+        self.group_label.linkActivated.connect(self._emit_group_clicked)
+        self.group_label.setText(self._group_links_text())
 
         self.topic_label = QLabel(self.lesson.topic or "Untitled lesson")
         self.topic_label.setObjectName("LessonCardTopic")
@@ -72,3 +87,16 @@ class LessonCard(QFrame):
         group_names = [link.group.name for link in self.lesson.schedule.group_links]
         return ", ".join(group_names) if group_names else "No groups"
 
+    def _group_links_text(self) -> str:
+        if not self.groups_by_id:
+            return escape(self.groups_text)
+        links = [
+            f'<a href="{group_id}">{escape(group.name)}</a>'
+            for group_id, group in self.groups_by_id.items()
+        ]
+        return ", ".join(links)
+
+    def _emit_group_clicked(self, group_id: str) -> None:
+        group = self.groups_by_id.get(group_id)
+        if group is not None:
+            self.group_clicked.emit(group)

@@ -9,6 +9,7 @@ from app.database import DATABASE_URL
 from app.models import (
     Attendance,
     Base,
+    Comment,
     Group,
     Lesson,
     Mark,
@@ -136,13 +137,11 @@ class DiaryRepository:
             self.ensure_lessons_for_schedule(schedule, spec["topic"], settings)
 
         self.session.commit()
-        self.ensure_attendance_and_marks()
 
     def ensure_lessons_for_semester(self, settings: SemesterSettings) -> None:
         for schedule in self.list_schedules():
             self.ensure_lessons_for_schedule(schedule, self.schedule_topic(schedule), settings)
         self.session.commit()
-        self.ensure_attendance_and_marks()
 
     def ensure_lessons_for_schedule(
         self,
@@ -172,39 +171,7 @@ class DiaryRepository:
                 lesson.topic = topic
 
     def ensure_attendance_and_marks(self) -> None:
-        today = date.today()
-        for lesson in self.list_lessons():
-            for student in self.students_for_lesson(lesson):
-                attendance = self.session.scalar(
-                    select(Attendance).where(
-                        Attendance.lesson_id == lesson.id,
-                        Attendance.student_id == student.id,
-                    )
-                )
-                if attendance is None:
-                    visited = lesson.date <= today and (student.id + lesson.id) % 4 != 0
-                    self.session.add(
-                        Attendance(
-                            lesson_id=lesson.id,
-                            student_id=student.id,
-                            is_visited=visited,
-                        )
-                    )
-                if lesson.schedule.is_assessment:
-                    mark = self.session.scalar(
-                        select(Mark).where(
-                            Mark.lesson_id == lesson.id,
-                            Mark.student_id == student.id,
-                        )
-                    )
-                    if mark is None and lesson.date <= today:
-                        self.session.add(
-                            Mark(
-                                lesson_id=lesson.id,
-                                student_id=student.id,
-                                data=76 + (student.id * 3 + lesson.id) % 20,
-                            )
-                        )
+        """Kept for older UI calls; records are now created only by teacher input."""
         self.session.commit()
 
     def list_groups(self) -> list[Group]:
@@ -212,7 +179,11 @@ class DiaryRepository:
             select(Group)
             .options(
                 selectinload(Group.students).selectinload(Student.attendances),
-                selectinload(Group.students).selectinload(Student.marks),
+                selectinload(Group.students)
+                .selectinload(Student.marks)
+                .selectinload(Mark.lesson)
+                .selectinload(Lesson.schedule),
+                selectinload(Group.students).selectinload(Student.comments),
                 selectinload(Group.schedule_links)
                 .selectinload(ScheduleGroupLink.schedule)
                 .selectinload(Schedule.lessons),
@@ -227,13 +198,61 @@ class DiaryRepository:
             .options(
                 selectinload(Student.group),
                 selectinload(Student.attendances),
-                selectinload(Student.marks),
+                selectinload(Student.marks)
+                .selectinload(Mark.lesson)
+                .selectinload(Lesson.schedule),
+                selectinload(Student.comments),
             )
             .order_by(Student.surname, Student.first_name)
         )
         if group_id is not None:
             stmt = stmt.where(Student.group_id == group_id)
         return list(self.session.scalars(stmt).all())
+
+    def get_group(self, group_id: int) -> Group | None:
+        stmt = (
+            select(Group)
+            .where(Group.id == group_id)
+            .options(
+                selectinload(Group.students).selectinload(Student.attendances),
+                selectinload(Group.students)
+                .selectinload(Student.marks)
+                .selectinload(Mark.lesson)
+                .selectinload(Lesson.schedule),
+                selectinload(Group.students).selectinload(Student.comments),
+                selectinload(Group.schedule_links)
+                .selectinload(ScheduleGroupLink.schedule)
+                .selectinload(Schedule.lessons),
+            )
+        )
+        return self.session.scalar(stmt)
+
+    def get_student(self, student_id: int) -> Student | None:
+        stmt = (
+            select(Student)
+            .where(Student.id == student_id)
+            .options(
+                selectinload(Student.group)
+                .selectinload(Group.schedule_links)
+                .selectinload(ScheduleGroupLink.schedule)
+                .selectinload(Schedule.lessons),
+                selectinload(Student.attendances)
+                .selectinload(Attendance.lesson)
+                .selectinload(Lesson.schedule),
+                selectinload(Student.marks)
+                .selectinload(Mark.lesson)
+                .selectinload(Lesson.schedule),
+                selectinload(Student.comments)
+                .selectinload(Comment.lesson)
+                .selectinload(Lesson.schedule),
+            )
+        )
+        return self.session.scalar(stmt)
+
+    def get_lesson(self, lesson_id: int) -> Lesson | None:
+        return self.session.scalar(
+            self._lesson_options(select(Lesson).where(Lesson.id == lesson_id))
+        )
 
     def list_schedules(self) -> list[Schedule]:
         stmt = (
@@ -269,6 +288,7 @@ class DiaryRepository:
             .selectinload(Group.students),
             selectinload(Lesson.attendances).selectinload(Attendance.student),
             selectinload(Lesson.marks).selectinload(Mark.student),
+            selectinload(Lesson.comments).selectinload(Comment.student),
         )
 
     def students_for_lesson(self, lesson: Lesson) -> list[Student]:
@@ -300,6 +320,107 @@ class DiaryRepository:
             if attendance.student_id == student.id:
                 return attendance
         return None
+
+    def mark_for(self, lesson: Lesson, student: Student) -> Mark | None:
+        for mark in lesson.marks:
+            if mark.student_id == student.id:
+                return mark
+        return None
+
+    def comment_for(self, lesson: Lesson, student: Student) -> Comment | None:
+        for comment in lesson.comments:
+            if comment.student_id == student.id:
+                return comment
+        return None
+
+    def lessons_for_student(self, student: Student) -> list[Lesson]:
+        group = self.get_group(student.group_id)
+        if group is None:
+            return []
+
+        lesson_ids: set[int] = set()
+        for link in group.schedule_links:
+            for lesson in link.schedule.lessons:
+                lesson_ids.add(lesson.id)
+
+        lessons = [
+            lesson
+            for lesson_id in lesson_ids
+            if (lesson := self.get_lesson(lesson_id)) is not None
+        ]
+        return sorted(lessons, key=lambda item: (item.date, item.schedule.time))
+
+    def save_lesson_student_record(
+        self,
+        lesson: Lesson,
+        student: Student,
+        *,
+        attended: bool,
+        comment_text: str,
+        mark_value: int | None,
+    ) -> None:
+        attendance = self.session.scalar(
+            select(Attendance).where(
+                Attendance.lesson_id == lesson.id,
+                Attendance.student_id == student.id,
+            )
+        )
+        if attendance is None:
+            self.session.add(
+                Attendance(
+                    lesson_id=lesson.id,
+                    student_id=student.id,
+                    is_visited=attended,
+                )
+            )
+        else:
+            attendance.is_visited = attended
+
+        comment = self.session.scalar(
+            select(Comment).where(
+                Comment.lesson_id == lesson.id,
+                Comment.student_id == student.id,
+            )
+        )
+        cleaned_comment = comment_text.strip()
+        if cleaned_comment:
+            if comment is None:
+                self.session.add(
+                    Comment(
+                        lesson_id=lesson.id,
+                        student_id=student.id,
+                        data=cleaned_comment,
+                    )
+                )
+            else:
+                comment.data = cleaned_comment
+        elif comment is not None:
+            self.session.delete(comment)
+
+        if lesson.schedule.is_assessment:
+            mark = self.session.scalar(
+                select(Mark).where(
+                    Mark.lesson_id == lesson.id,
+                    Mark.student_id == student.id,
+                )
+            )
+            if mark_value is None:
+                if mark is not None:
+                    self.session.delete(mark)
+            elif mark is None:
+                self.session.add(
+                    Mark(
+                        lesson_id=lesson.id,
+                        student_id=student.id,
+                        data=mark_value,
+                    )
+                )
+            else:
+                mark.data = mark_value
+
+        self.session.commit()
+        self.session.expire_all()
+
 
     def lesson_attendance_summary(self, lesson: Lesson) -> dict[str, int]:
         students = self.students_for_lesson(lesson)
@@ -444,7 +565,6 @@ class DiaryRepository:
             self.session.add(ScheduleGroupLink(group_id=group.id, schedule_id=schedule.id))
         self.ensure_lessons_for_schedule(schedule, topic, settings)
         self.session.commit()
-        self.ensure_attendance_and_marks()
         return schedule
 
     def update_schedule(
@@ -474,7 +594,6 @@ class DiaryRepository:
         self.session.flush()
         self.ensure_lessons_for_schedule(schedule, topic, settings)
         self.session.commit()
-        self.ensure_attendance_and_marks()
 
     def delete_schedule(self, schedule: Schedule) -> None:
         self.session.delete(schedule)

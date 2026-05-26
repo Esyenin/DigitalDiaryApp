@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, time, timedelta
+from html import escape
 import sys
 
 from PySide6.QtCore import QSettings, Qt, QTime
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTextEdit,
     QTimeEdit,
     QVBoxLayout,
@@ -40,6 +42,7 @@ from app.ui.data.calendar import (
     day_index,
     format_input_date,
     format_long_date,
+    format_short_date,
     format_week_range,
     monday_for,
     parse_date_input,
@@ -50,14 +53,11 @@ from app.ui.data.calendar import (
 )
 from app.ui.data.repository import DiaryRepository
 from app.ui.generated.MainWindowUI import Ui_MainWindow
-from app.ui.widgets.cards import (
-    GroupCard,
-    ScheduleTemplateCard,
-    StudentCard,
-    make_metric,
-    make_table_row,
-)
+from app.ui.widgets.card_helpers import make_link_button, make_metric, make_table_row
+from app.ui.widgets.group_card import GroupCard
 from app.ui.widgets.lesson_card import LessonCard
+from app.ui.widgets.schedule_template_card import ScheduleTemplateCard
+from app.ui.widgets.student_card import StudentCard
 
 
 def clear_layout(layout) -> None:
@@ -85,6 +85,9 @@ class MainWindow(QMainWindow):
         )
         self.student_filter_group_id: int | None = None
         self.detail_page: QWidget | None = None
+        self._groups_grid_columns: int | None = None
+        self._settings_groups_grid_columns: int | None = None
+        self._ui_ready = False
 
         self.repository.seed_demo_data(self.semester_settings)
 
@@ -99,10 +102,23 @@ class MainWindow(QMainWindow):
         self._connect_actions()
         self._populate_semester_inputs()
         self.refresh_all()
+        self._ui_ready = True
 
     def closeEvent(self, event):  # noqa: N802 - Qt method name
         self.repository.close()
         super().closeEvent(event)
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt method name
+        super().resizeEvent(event)
+        if not getattr(self, "_ui_ready", False):
+            return
+
+        groups_columns = self._grid_columns(compact=False)
+        settings_groups_columns = self._grid_columns(compact=True)
+        if groups_columns != self._groups_grid_columns:
+            self.render_groups()
+        if settings_groups_columns != self._settings_groups_grid_columns:
+            self.render_settings_groups()
 
     def refresh_all(self) -> None:
         self.render_schedule()
@@ -361,6 +377,7 @@ class MainWindow(QMainWindow):
                 for lesson in day_lessons:
                     card = LessonCard(lesson, self.repository.lesson_groups_text(lesson))
                     card.clicked.connect(self.show_lesson_detail)
+                    card.group_clicked.connect(self.show_group_detail)
                     day_layout.addWidget(card)
             else:
                 empty = QLabel("No lessons")
@@ -374,12 +391,16 @@ class MainWindow(QMainWindow):
     def render_groups(self) -> None:
         clear_layout(self.ui.groupsFreeSpace)
         scroll, grid = self._make_scroll_grid()
-        for index, group in enumerate(self.repository.list_groups()):
+        groups = self.repository.list_groups()
+        columns = self._grid_columns(compact=False)
+        self._groups_grid_columns = columns
+        for index, group in enumerate(groups):
             card = GroupCard(group, self.repository.group_stats(group))
             card.clicked.connect(self.show_group_detail)
-            grid.addWidget(card, index // 2, index % 2)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
+            grid.addWidget(card, index // columns, index % columns)
+        for column in range(columns):
+            grid.setColumnStretch(column, 1)
+        grid.setRowStretch((len(groups) + columns - 1) // columns, 1)
         self._add_single_widget(self.ui.groupsFreeSpace, scroll)
 
     def render_settings_schedules(self) -> None:
@@ -404,7 +425,10 @@ class MainWindow(QMainWindow):
     def render_settings_groups(self) -> None:
         clear_layout(self.ui.settingsGroupsFreeSpace)
         scroll, grid = self._make_scroll_grid()
-        for index, group in enumerate(self.repository.list_groups()):
+        groups = self.repository.list_groups()
+        columns = self._grid_columns(compact=True)
+        self._settings_groups_grid_columns = columns
+        for index, group in enumerate(groups):
             card = GroupCard(
                 group,
                 self.repository.group_stats(group),
@@ -414,9 +438,10 @@ class MainWindow(QMainWindow):
             card.clicked.connect(self.show_group_detail)
             card.edit_clicked.connect(self.show_group_dialog)
             card.delete_clicked.connect(self.delete_group)
-            grid.addWidget(card, index // 2, index % 2)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
+            grid.addWidget(card, index // columns, index % columns)
+        for column in range(columns):
+            grid.setColumnStretch(column, 1)
+        grid.setRowStretch((len(groups) + columns - 1) // columns, 1)
         self._add_single_widget(self.ui.settingsGroupsFreeSpace, scroll)
 
     def render_settings_students(self) -> None:
@@ -429,6 +454,7 @@ class MainWindow(QMainWindow):
                 self.repository.full_student_name(student),
                 student.group.name,
             )
+            card.clicked.connect(self.show_student_detail)
             card.edit_clicked.connect(self.show_student_dialog)
             card.delete_clicked.connect(self.delete_student)
             layout.addWidget(card)
@@ -457,6 +483,12 @@ class MainWindow(QMainWindow):
         self.render_settings_students()
 
     def show_lesson_detail(self, lesson: Lesson) -> None:
+        current_lesson = self.repository.get_lesson(lesson.id)
+        if current_lesson is None:
+            QMessageBox.warning(self, "Lesson", "Lesson was not found.")
+            return
+        lesson = current_lesson
+
         page = QWidget()
         page.setObjectName("DetailPage")
         layout = QVBoxLayout(page)
@@ -493,8 +525,10 @@ class MainWindow(QMainWindow):
             f"{lesson.schedule.time.strftime('%H:%M')}"
         )
         meta.setObjectName("DetailMeta")
-        groups = QLabel(f"Groups: {self.repository.lesson_groups_text(lesson)}")
-        groups.setObjectName("DetailMeta")
+        groups = self._make_group_links_label(
+            "Groups: ",
+            [link.group for link in lesson.schedule.group_links],
+        )
 
         header_layout.addLayout(top)
         header_layout.addWidget(meta)
@@ -514,31 +548,23 @@ class MainWindow(QMainWindow):
         table_layout = table.layout()
         table_layout.addWidget(
             make_table_row(
-                ["Student Name", "Group", "Attendance", "Comments", "Actions"],
+                ["Student Name", "Group", "Attendance", "Comment", "Score", "Actions"],
                 "TableHeader",
             )
         )
         for student in self.repository.students_for_lesson(lesson):
-            attendance = self.repository.attendance_for(lesson, student)
-            visited = attendance is not None and attendance.is_visited
-            student_name = QLabel(self.repository.full_student_name(student))
-            student_name.setObjectName("LinkLabel")
-            table_layout.addWidget(
-                make_table_row(
-                    [
-                        student_name,
-                        student.group.name,
-                        "Present" if visited else "Absent",
-                        "-",
-                        "View Profile",
-                    ]
-                )
-            )
+            table_layout.addWidget(self._make_lesson_student_row(lesson, student))
         layout.addWidget(table)
         layout.addStretch()
         self._show_detail_page(page)
 
     def show_group_detail(self, group: Group) -> None:
+        current_group = self.repository.get_group(group.id)
+        if current_group is None:
+            QMessageBox.warning(self, "Group", "Group was not found.")
+            return
+        group = current_group
+
         page = QWidget()
         page.setObjectName("DetailPage")
         layout = QVBoxLayout(page)
@@ -581,8 +607,10 @@ class MainWindow(QMainWindow):
         )
         for student in sorted(group.students, key=lambda item: (item.surname, item.first_name)):
             stats = self.repository.student_stats(student)
-            name = QLabel(self.repository.full_student_name(student))
-            name.setObjectName("LinkLabel")
+            name = make_link_button(self.repository.full_student_name(student))
+            name.clicked.connect(lambda checked=False, current=student: self.show_student_detail(current))
+            profile = make_link_button("View Profile")
+            profile.clicked.connect(lambda checked=False, current=student: self.show_student_detail(current))
             table_layout.addWidget(
                 make_table_row(
                     [
@@ -591,7 +619,7 @@ class MainWindow(QMainWindow):
                         stats["lab"],
                         stats["test"],
                         f"{stats['attendance']}%",
-                        "View Profile",
+                        profile,
                     ]
                 )
             )
@@ -634,33 +662,278 @@ class MainWindow(QMainWindow):
         )
         info.setObjectName("SettingsCardSubtitle")
         dates = QLabel(
-            ", ".join(
-                lesson.date.strftime("%b %d")
-                for lesson in sorted(schedule.lessons, key=lambda item: item.date)
-                if lesson.date <= date.today()
+            "Dates: "
+            + (
+                ", ".join(
+                    lesson.date.strftime("%b %d")
+                    for lesson in sorted(schedule.lessons, key=lambda item: item.date)
+                )
+                or "No generated lessons yet"
             )
-            or "No held lessons yet"
         )
         dates.setObjectName("SettingsCardText")
+        dates.setWordWrap(True)
         text.addWidget(title)
         text.addWidget(info)
         text.addWidget(dates)
+
+        lessons = sorted(schedule.lessons, key=lambda item: item.date)
+        if lessons:
+            selected_lesson = next(
+                (lesson for lesson in lessons if lesson.date >= date.today()),
+                lessons[-1],
+            )
+            open_button = QPushButton("Open lesson")
+            open_button.setObjectName("CardEditButton")
+            open_button.clicked.connect(
+                lambda checked=False, current=selected_lesson: self.show_lesson_detail(current)
+            )
+        else:
+            open_button = QLabel("No lessons")
+            open_button.setObjectName("SettingsCardSubtitle")
+
         badge = QLabel(f"{held_count} lessons held")
         badge.setObjectName("DarkBadge")
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         badge.setFixedWidth(130)
         layout.addLayout(text)
         layout.addStretch()
+        layout.addWidget(open_button)
         layout.addWidget(badge)
         return row
 
+    def show_student_detail(self, student: Student) -> None:
+        current_student = self.repository.get_student(student.id)
+        if current_student is None:
+            QMessageBox.warning(self, "Student", "Student was not found.")
+            return
+        student = current_student
+
+        page = QWidget()
+        page.setObjectName("DetailPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(84, 32, 84, 36)
+        layout.setSpacing(22)
+
+        back = QPushButton("<  Back to Students")
+        back.setObjectName("BackButton")
+        back.clicked.connect(self._show_students_settings_page)
+        layout.addWidget(back, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        header = QFrame()
+        header.setObjectName("DetailHeader")
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(28, 24, 28, 24)
+        header_layout.setSpacing(12)
+
+        title = QLabel(self.repository.full_student_name(student))
+        title.setObjectName("DetailTitle")
+        group_link = self._make_group_links_label("Group: ", [student.group])
+        email = QLabel(f"Email: {student.bmstu_email or '-'}")
+        email.setObjectName("DetailMeta")
+
+        header_layout.addWidget(title)
+        header_layout.addWidget(group_link)
+        header_layout.addWidget(email)
+        layout.addWidget(header)
+
+        stats_data = self.repository.student_stats(student)
+        stats = QHBoxLayout()
+        stats.setSpacing(18)
+        stats.addWidget(make_metric("Overall Average", stats_data["overall"], "MetricBlue"))
+        stats.addWidget(make_metric("Lab Average", stats_data["lab"], "MetricGreen"))
+        stats.addWidget(make_metric("Test Average", stats_data["test"], "MetricRed"))
+        stats.addWidget(make_metric("Attendance", f"{stats_data['attendance']}%", "MetricPurple"))
+        layout.addLayout(stats)
+
+        records = self._make_table("Lesson Records")
+        records_layout = records.layout()
+        records_layout.addWidget(
+            make_table_row(
+                ["Date", "Lesson", "Type", "Attendance", "Score", "Comment"],
+                "TableHeader",
+            )
+        )
+        lessons = self.repository.lessons_for_student(student)
+        if lessons:
+            for lesson in lessons:
+                records_layout.addWidget(self._make_student_lesson_row(student, lesson))
+        else:
+            empty = QLabel("No lessons for this student yet.")
+            empty.setObjectName("SettingsCardSubtitle")
+            records_layout.addWidget(empty)
+        layout.addWidget(records)
+        layout.addStretch()
+        self._show_detail_page(page)
+
+    def _make_lesson_student_row(self, lesson: Lesson, student: Student) -> QFrame:
+        attendance = self.repository.attendance_for(lesson, student)
+        comment = self.repository.comment_for(lesson, student)
+        mark = self.repository.mark_for(lesson, student)
+
+        student_button = make_link_button(self.repository.full_student_name(student))
+        student_button.clicked.connect(
+            lambda checked=False, current=student: self.show_student_detail(current)
+        )
+
+        group_button = make_link_button(student.group.name)
+        group_button.clicked.connect(
+            lambda checked=False, current=student.group: self.show_group_detail(current)
+        )
+
+        attendance_input = QCheckBox("Present")
+        attendance_input.setObjectName("InlineCheckBox")
+        attendance_input.setChecked(attendance is not None and attendance.is_visited)
+
+        comment_input = QLineEdit(comment.data if comment is not None and comment.data else "")
+        comment_input.setObjectName("InlineTextInput")
+        comment_input.setPlaceholderText("Comment")
+        comment_input.setMinimumWidth(220)
+
+        mark_input = QLineEdit(str(mark.data) if mark is not None else "")
+        mark_input.setObjectName("ScoreInput")
+        mark_input.setPlaceholderText("0-100")
+        mark_input.setMaxLength(3)
+        mark_input.setEnabled(lesson.schedule.is_assessment)
+        if not lesson.schedule.is_assessment:
+            mark_input.setText("-")
+
+        actions = QWidget()
+        actions_layout = QHBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(8)
+        profile_button = make_link_button("Profile")
+        profile_button.clicked.connect(
+            lambda checked=False, current=student: self.show_student_detail(current)
+        )
+        save_button = QPushButton("Save")
+        save_button.setObjectName("PrimarySmallButton")
+        save_button.clicked.connect(
+            lambda checked=False, current_lesson=lesson, current_student=student: (
+                self._save_lesson_student_result(
+                    current_lesson,
+                    current_student,
+                    attendance_input,
+                    comment_input,
+                    mark_input,
+                )
+            )
+        )
+        actions_layout.addWidget(profile_button)
+        actions_layout.addWidget(save_button)
+
+        return make_table_row(
+            [
+                student_button,
+                group_button,
+                attendance_input,
+                comment_input,
+                mark_input,
+                actions,
+            ]
+        )
+
+    def _make_student_lesson_row(self, student: Student, lesson: Lesson) -> QFrame:
+        attendance = self.repository.attendance_for(lesson, student)
+        mark = self.repository.mark_for(lesson, student)
+        comment = self.repository.comment_for(lesson, student)
+
+        lesson_button = make_link_button(lesson.topic or "Untitled lesson")
+        lesson_button.clicked.connect(
+            lambda checked=False, current=lesson: self.show_lesson_detail(current)
+        )
+
+        return make_table_row(
+            [
+                format_short_date(lesson.date),
+                lesson_button,
+                lesson.schedule.type,
+                "Present" if attendance is not None and attendance.is_visited else "Not set",
+                mark.data if mark is not None else "-",
+                comment.data if comment is not None and comment.data else "-",
+            ]
+        )
+
+    def _save_lesson_student_result(
+        self,
+        lesson: Lesson,
+        student: Student,
+        attendance_input: QCheckBox,
+        comment_input: QLineEdit,
+        mark_input: QLineEdit,
+    ) -> None:
+        mark_value: int | None = None
+        if lesson.schedule.is_assessment:
+            mark_text = mark_input.text().strip()
+            if mark_text:
+                try:
+                    mark_value = int(mark_text)
+                except ValueError:
+                    QMessageBox.warning(self, "Lesson", "Score must be a number from 0 to 100.")
+                    return
+                if mark_value < 0 or mark_value > 100:
+                    QMessageBox.warning(self, "Lesson", "Score must be between 0 and 100.")
+                    return
+
+        self.repository.save_lesson_student_record(
+            lesson,
+            student,
+            attended=attendance_input.isChecked(),
+            comment_text=comment_input.text(),
+            mark_value=mark_value,
+        )
+        self.render_schedule()
+        self.render_groups()
+        self.render_settings_groups()
+        self.render_settings_students()
+        refreshed_lesson = self.repository.get_lesson(lesson.id)
+        if refreshed_lesson is not None:
+            self.show_lesson_detail(refreshed_lesson)
+
+    def _show_students_settings_page(self) -> None:
+        self._show_main_page(self.ui.pageSettings)
+        self._show_settings_page(self.ui.pageSettingsStudents)
+
+    def _make_group_links_label(self, prefix: str, groups: list[Group]) -> QLabel:
+        label = QLabel()
+        label.setObjectName("DetailMeta")
+        label.setTextFormat(Qt.TextFormat.RichText)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        label.setOpenExternalLinks(False)
+        label.setWordWrap(True)
+        if groups:
+            links = ", ".join(
+                f'<a href="{group.id}">{escape(group.name)}</a>'
+                for group in sorted(groups, key=lambda item: item.name)
+            )
+            label.setText(f"{escape(prefix)}{links}")
+            label.linkActivated.connect(self._show_group_by_id)
+        else:
+            label.setText(f"{escape(prefix)}No groups")
+        return label
+
+    def _show_group_by_id(self, group_id: str) -> None:
+        try:
+            group = self.repository.get_group(int(group_id))
+        except ValueError:
+            group = None
+        if group is not None:
+            self.show_group_detail(group)
+
     def _show_detail_page(self, page: QWidget) -> None:
+        page.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        scroll = QScrollArea()
+        scroll.setObjectName("DetailScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        scroll.setWidget(page)
+
         if self.detail_page is not None:
             self.ui.mainWidget.removeWidget(self.detail_page)
             self.detail_page.deleteLater()
-        self.detail_page = page
-        self.ui.mainWidget.addWidget(page)
-        self.ui.mainWidget.setCurrentWidget(page)
+        self.detail_page = scroll
+        self.ui.mainWidget.addWidget(scroll)
+        self.ui.mainWidget.setCurrentWidget(scroll)
         self._sync_nav_state()
 
     def show_schedule_dialog(self, schedule: Schedule | None = None) -> None:
@@ -873,14 +1146,26 @@ class MainWindow(QMainWindow):
         layout.addWidget(label)
         return frame
 
+    def _grid_columns(self, *, compact: bool) -> int:
+        width = max(self.width(), self.ui.mainWidget.width())
+        if width < 1200:
+            return 1
+        if compact and width >= 1700:
+            return 3
+        return 2
+
     def _make_scroll_vbox(self) -> tuple[QScrollArea, QVBoxLayout]:
         scroll = QScrollArea()
         scroll.setObjectName("ContentScroll")
         scroll.setWidgetResizable(True)
+        scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         content = QWidget()
+        content.setObjectName("ContentScrollBody")
+        content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(0, 0, 4, 0)
         layout.setSpacing(14)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         scroll.setWidget(content)
         return scroll, layout
 
@@ -888,11 +1173,15 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setObjectName("ContentScroll")
         scroll.setWidgetResizable(True)
+        scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         content = QWidget()
+        content.setObjectName("ContentScrollBody")
+        content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         layout = QGridLayout(content)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setHorizontalSpacing(18)
-        layout.setVerticalSpacing(18)
+        layout.setContentsMargins(0, 0, 4, 0)
+        layout.setHorizontalSpacing(20)
+        layout.setVerticalSpacing(20)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         scroll.setWidget(content)
         return scroll, layout
 
@@ -1038,20 +1327,29 @@ class MainWindow(QMainWindow):
             }
 
             QFrame#LessonCard,
-            QFrame#GroupCard,
-            QFrame#GroupCardCompact,
             QFrame#SettingsCard,
             QFrame#DetailHeader,
             QFrame#DetailTable {
                 background-color: #ffffff;
-                border: 1px solid #dfe4ec;
+                border: 1px solid #d8e0ec;
                 border-radius: 10px;
+            }
+
+            QFrame#GroupCard,
+            QFrame#GroupCardCompact {
+                background-color: #fffaf0;
+                border: 1px solid #e3d2ac;
+                border-radius: 10px;
+            }
+
+            QFrame#GroupCardCompact {
+                background-color: #fffdf7;
             }
 
             QFrame#LessonCard:hover,
             QFrame#GroupCard:hover,
             QFrame#GroupCardCompact:hover {
-                border-color: #bfc9d8;
+                border-color: #c9ad71;
             }
 
             QLabel#LessonCardTime {
@@ -1161,6 +1459,30 @@ class MainWindow(QMainWindow):
                 font-size: 14px;
             }
 
+            QPushButton#LinkButton {
+                background: transparent;
+                color: #075cff;
+                border: none;
+                padding: 0;
+                min-height: 24px;
+                font-size: 16px;
+                text-align: left;
+            }
+
+            QPushButton#LinkButton:hover {
+                color: #003fbd;
+                text-decoration: underline;
+            }
+
+            QPushButton#PrimarySmallButton {
+                background-color: #030416;
+                color: #ffffff;
+                border-radius: 8px;
+                padding: 4px 12px;
+                min-height: 28px;
+                font-size: 14px;
+            }
+
             QTextEdit,
             QLineEdit,
             QComboBox,
@@ -1175,24 +1497,43 @@ class MainWindow(QMainWindow):
                 min-height: 34px;
             }
 
+            QLineEdit#InlineTextInput,
+            QLineEdit#ScoreInput {
+                min-height: 28px;
+                padding: 5px 8px;
+                font-size: 14px;
+            }
+
+            QLineEdit#ScoreInput {
+                max-width: 72px;
+            }
+
+            QCheckBox#InlineCheckBox {
+                background: transparent;
+                color: #07152d;
+                font-size: 15px;
+                spacing: 8px;
+            }
+
             QTextEdit#settingsSemesterActionDateTextBox,
             QTextEdit#settingsSemesterActionTextBox {
                 max-height: 44px;
             }
 
-            QScrollArea#ContentScroll {
+            QScrollArea#ContentScroll,
+            QScrollArea#DetailScroll {
                 background: transparent;
                 border: none;
             }
 
-            QScrollArea#ContentScroll QWidget {
+            QWidget#ContentScrollBody {
                 background: transparent;
             }
 
             QLabel#RoundIcon,
             QLabel#RoundIconMuted {
-                background-color: #dcebff;
-                color: #075cff;
+                background-color: #e4f7ef;
+                color: #087f5b;
                 border-radius: 27px;
                 font-size: 20px;
                 font-weight: 700;
@@ -1339,8 +1680,8 @@ class MainWindow(QMainWindow):
         ui.scheduleLessonsLesson.setVerticalSpacing(16)
 
         ui.verticalLayout_11.setContentsMargins(0, 0, 0, 0)
-        ui.mainGroups.setContentsMargins(104, 34, 104, 0)
-        ui.mainGroups.setSpacing(22)
+        ui.mainGroups.setContentsMargins(104, 34, 104, 34)
+        ui.mainGroups.setSpacing(24)
         ui.mainGroups.setStretch(0, 0)
         ui.mainGroups.setStretch(1, 1)
         ui.groupsTips.setSpacing(4)
@@ -1352,8 +1693,8 @@ class MainWindow(QMainWindow):
         ui.mainSettings.setContentsMargins(104, 34, 104, 0)
         ui.settingsCurrent.setSpacing(4)
 
-        ui.settingsAlternative.setContentsMargins(104, 0, 104, 0)
-        ui.settingsAlternative.setSpacing(28)
+        ui.settingsAlternative.setContentsMargins(104, 0, 104, 34)
+        ui.settingsAlternative.setSpacing(24)
         ui.settingsAlternative.setStretch(0, 0)
         ui.settingsAlternative.setStretch(1, 1)
         ui.settingsAlternativeAction.setSpacing(0)
@@ -1368,7 +1709,9 @@ class MainWindow(QMainWindow):
             layout.setSpacing(0)
 
         ui.settingsScheduleMain.setContentsMargins(0, 8, 0, 0)
-        ui.settingsScheduleMain.setSpacing(20)
+        ui.settingsScheduleMain.setSpacing(22)
+        ui.settingsScheduleMain.setStretch(0, 0)
+        ui.settingsScheduleMain.setStretch(1, 1)
         ui.settingsScheduleChange.setSpacing(18)
         ui.settingsScheduleChange.setStretch(0, 1)
         ui.settingsScheduleChange.setStretch(1, 0)
@@ -1378,7 +1721,9 @@ class MainWindow(QMainWindow):
         )
 
         ui.settingsGroupsMain.setContentsMargins(0, 8, 0, 0)
-        ui.settingsGroupsMain.setSpacing(20)
+        ui.settingsGroupsMain.setSpacing(22)
+        ui.settingsGroupsMain.setStretch(0, 0)
+        ui.settingsGroupsMain.setStretch(1, 1)
         ui.settingsGroupsChange.setSpacing(18)
         ui.settingsGroupsChange.setStretch(0, 1)
         ui.settingsGroupsChange.setStretch(1, 0)
@@ -1388,7 +1733,9 @@ class MainWindow(QMainWindow):
         )
 
         ui.settingsStudentsMain.setContentsMargins(0, 8, 0, 0)
-        ui.settingsStudentsMain.setSpacing(20)
+        ui.settingsStudentsMain.setSpacing(22)
+        ui.settingsStudentsMain.setStretch(0, 0)
+        ui.settingsStudentsMain.setStretch(1, 1)
         ui.settingsStudentsChange.setSpacing(18)
         ui.settingsStudentsChange.setStretch(0, 0)
         ui.settingsStudentsChange.setStretch(1, 1)
@@ -1438,4 +1785,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
