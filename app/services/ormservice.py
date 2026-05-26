@@ -7,11 +7,13 @@
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import importlib
 import inspect
 import logging
+from pathlib import Path
 import pkgutil
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
@@ -19,6 +21,8 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.io_tools import ImportExportService
+from app.io_tools.xlsx_config import normalize_sheet_keys
 import app.services as services_package
 from app.models import Base
 from app.services.base import BaseService
@@ -130,6 +134,7 @@ class OrmService:
         self.close_on_exit = close_on_exit
         self._services_by_model: dict[type[Base], BaseService[Any]] = {}
         self._services_by_schema: dict[type[BaseModel], BaseService[Any]] = {}
+        self._import_export_service = ImportExportService()
 
         for service in self._build_services():
             self._register_service(service)
@@ -616,6 +621,70 @@ class OrmService:
         )
         return result
 
+    @staticmethod
+    def _sheet_key_from_model(model: type[Base]) -> str:
+        """
+        Приводит ORM-модель к каноническому ключу XLSX-листа.
+
+        :param model: Класс ORM-модели, зарегистрированной в фасаде.
+        :return: Канонический ключ листа XLSX для этой модели.
+        :raises OrmServiceError: Если для модели не удалось определить ключ листа.
+        """
+        model_name = re.sub(r"(?<!^)(?=[A-Z])", "_", model.__name__).lower()
+
+        try:
+            return normalize_sheet_keys([model_name])[0]
+        except (IndexError, ValueError) as exc:
+            raise OrmServiceError(
+                f"Cannot resolve XLSX sheet key for model {model.__name__}."
+            ) from exc
+
+    def _service_from_sheet_key(self, sheet_key: str) -> BaseService[Any]:
+        """
+        Находит сервис по каноническому ключу XLSX-листа.
+
+        :param sheet_key: Каноническое имя листа XLSX.
+        :return: Сервис сущности, соответствующий переданному листу.
+        :raises UnknownServiceError: Если ни один сервис не связан с этим листом.
+        """
+        for model, service in self._services_by_model.items():
+            if self._sheet_key_from_model(model) == sheet_key:
+                return service
+
+        self.logger.error(
+            "Service resolving failed: unknown XLSX sheet key=%s.",
+            sheet_key,
+        )
+        raise UnknownServiceError(
+            f"No service registered for XLSX sheet key {sheet_key}."
+        )
+
+    def _export_payload_for_sheet_keys(
+        self,
+        sheet_keys: Sequence[str],
+    ) -> dict[str, list[Base]]:
+        """
+        Собирает данные из базы для экспорта по набору листов.
+
+        :param sheet_keys: Канонические ключи листов XLSX, которые нужно выгрузить.
+        :return: Словарь, где ключом является имя листа, а значением список ORM-объектов.
+        :raises OrmServiceError: Если получение данных для одного из листов завершилось ошибкой.
+        """
+        export_payload: dict[str, list[Base]] = {}
+
+        for sheet_key in sheet_keys:
+            service = self._service_from_sheet_key(sheet_key)
+            objects = self._select_objects(service, {})
+
+            if objects is None:
+                raise OrmServiceError(
+                    f"Failed to collect export data for sheet {sheet_key}."
+                )
+
+            export_payload[sheet_key] = objects
+
+        return export_payload
+
     def _save(self, action: str) -> bool:
         """
         Сохраняет изменения текущей операции в SQLAlchemy-сессии.
@@ -857,6 +926,133 @@ class OrmService:
             rowcount,
         )
         return rowcount
+
+    def export_to_xlsx(
+        self,
+        model_names: Sequence[str] | None,
+        file_path: str | Path,
+    ) -> Path:
+        """
+        Экспортирует данные выбранных сущностей в XLSX-файл.
+
+        :param model_names: Имена моделей или листов, которые нужно выгрузить. Если
+            передано `None`, экспортируются все поддерживаемые сущности.
+        :param file_path: Путь, по которому нужно сохранить XLSX-файл.
+        :return: Путь к сохраненному XLSX-файлу.
+        :raises OrmServiceError: Если не удалось нормализовать имена сущностей или
+            получить данные из базы для экспорта.
+        """
+        self.logger.info(
+            "XLSX export started. model_names=%s target=%s.",
+            model_names,
+            file_path,
+        )
+
+        try:
+            sheet_keys = normalize_sheet_keys(
+                None if model_names is None else list(model_names)
+            )
+        except ValueError as exc:
+            self.logger.error(
+                "XLSX export failed: unsupported model names=%s.",
+                model_names,
+            )
+            raise OrmServiceError(str(exc)) from exc
+
+        export_payload = self._export_payload_for_sheet_keys(sheet_keys)
+        exported_path = self._import_export_service.export_to_xlsx(
+            export_payload,
+            file_path,
+        )
+
+        self.logger.info(
+            "XLSX export finished. sheets=%s target=%s.",
+            len(export_payload),
+            exported_path,
+        )
+        return exported_path
+
+    def import_from_xlsx(
+        self,
+        file_path: str | Path,
+        model_names: Sequence[str] | None = None,
+    ) -> dict[str, int]:
+        """
+        Импортирует данные из XLSX-файла в базу данных.
+
+        :param file_path: Путь к XLSX-файлу, который нужно загрузить.
+        :param model_names: Имена моделей или листов, которые нужно импортировать. Если
+            передано `None`, импортируются все найденные в файле поддерживаемые листы.
+        :return: Словарь количества успешно импортированных записей по каждому листу.
+        :raises OrmServiceError: Если данные файла нельзя сопоставить сервисам,
+            одна из строк не проходит create-схему или сохранение завершается ошибкой.
+        """
+        self.logger.info(
+            "XLSX import started. source=%s model_names=%s.",
+            file_path,
+            model_names,
+        )
+
+        imported_data = self._import_export_service.import_from_xlsx(file_path)
+
+        try:
+            allowed_sheet_keys = normalize_sheet_keys(
+                None if model_names is None else list(model_names)
+            )
+        except ValueError as exc:
+            self.logger.error(
+                "XLSX import failed: unsupported model names=%s.",
+                model_names,
+            )
+            raise OrmServiceError(str(exc)) from exc
+
+        filtered_data = {
+            sheet_key: imported_data[sheet_key]
+            for sheet_key in allowed_sheet_keys
+            if sheet_key in imported_data
+        }
+        imported_counts: dict[str, int] = {}
+
+        for sheet_key, rows in filtered_data.items():
+            service = self._service_from_sheet_key(sheet_key)
+            imported_counts[sheet_key] = 0
+
+            for row in rows:
+                instance = service.create_instance(row)
+                if instance is None:
+                    self.logger.error(
+                        "XLSX import failed: row rejected. sheet=%s row=%r.",
+                        sheet_key,
+                        row,
+                    )
+                    raise OrmServiceError(
+                        f"Import row was rejected for sheet {sheet_key}."
+                    )
+
+                try:
+                    self.session.add(instance)
+                except SQLAlchemyError as exc:
+                    self.rollback()
+                    self.logger.exception(
+                        "XLSX import failed while adding object. sheet=%s row=%r.",
+                        sheet_key,
+                        row,
+                    )
+                    raise OrmServiceError(
+                        f"Failed to add imported object for sheet {sheet_key}."
+                    ) from exc
+
+                imported_counts[sheet_key] += 1
+
+        if filtered_data and not self._save("import_xlsx"):
+            raise OrmServiceError("Failed to save imported XLSX data.")
+
+        self.logger.info(
+            "XLSX import finished. sheets=%s counts=%s.",
+            len(imported_counts),
+            imported_counts,
+        )
+        return imported_counts
 
     def commit(self) -> bool:
         """

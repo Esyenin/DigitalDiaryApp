@@ -6,16 +6,14 @@ from app.schemas.attendance import (
     AttendanceCreateSchema,
     AttendanceDeleteSchema,
     AttendanceFilterSchema,
-    AttendanceReadSchema,
     AttendanceUpdateSchema,
 )
-from app.schemas.base import AppBaseSchema, BaseReadSchema, IdSchema, TimestampSchema
+from app.schemas.base import AppBaseSchema, IdSchema, TimestampSchema
 from app.schemas.comment import (
     CommentBaseSchema,
     CommentCreateSchema,
     CommentDeleteSchema,
     CommentFilterSchema,
-    CommentReadSchema,
     CommentUpdateSchema,
 )
 from app.schemas.group import (
@@ -23,7 +21,6 @@ from app.schemas.group import (
     GroupCreateSchema,
     GroupDeleteSchema,
     GroupFilterSchema,
-    GroupReadSchema,
     GroupUpdateSchema,
     is_group_name_formatted,
     is_speciality_formatted,
@@ -33,7 +30,6 @@ from app.schemas.lesson import (
     LessonCreateSchema,
     LessonDeleteSchema,
     LessonFilterSchema,
-    LessonReadSchema,
     LessonUpdateSchema,
 )
 from app.schemas.mark import (
@@ -41,7 +37,6 @@ from app.schemas.mark import (
     MarkCreateSchema,
     MarkDeleteSchema,
     MarkFilterSchema,
-    MarkReadSchema,
     MarkUpdateSchema,
 )
 from app.schemas.schedule import (
@@ -49,7 +44,6 @@ from app.schemas.schedule import (
     ScheduleCreateSchema,
     ScheduleDeleteSchema,
     ScheduleFilterSchema,
-    ScheduleReadSchema,
     ScheduleUpdateSchema,
 )
 from app.schemas.schedule_group_link import (
@@ -57,7 +51,6 @@ from app.schemas.schedule_group_link import (
     ScheduleGroupLinkCreateSchema,
     ScheduleGroupLinkDeleteSchema,
     ScheduleGroupLinkFilterSchema,
-    ScheduleGroupLinkReadSchema,
     ScheduleGroupLinkUpdateSchema,
 )
 from app.schemas.student import (
@@ -65,7 +58,6 @@ from app.schemas.student import (
     StudentCreateSchema,
     StudentDeleteSchema,
     StudentFilterSchema,
-    StudentReadSchema,
     StudentUpdateSchema,
 )
 
@@ -73,55 +65,46 @@ __all__ = [
     "AppBaseSchema",
     "IdSchema",
     "TimestampSchema",
-    "BaseReadSchema",
     "GroupBaseSchema",
     "GroupCreateSchema",
     "GroupUpdateSchema",
     "GroupFilterSchema",
     "GroupDeleteSchema",
-    "GroupReadSchema",
     "StudentBaseSchema",
     "StudentCreateSchema",
     "StudentUpdateSchema",
     "StudentFilterSchema",
     "StudentDeleteSchema",
-    "StudentReadSchema",
     "ScheduleBaseSchema",
     "ScheduleCreateSchema",
     "ScheduleUpdateSchema",
     "ScheduleFilterSchema",
     "ScheduleDeleteSchema",
-    "ScheduleReadSchema",
     "ScheduleGroupLinkBaseSchema",
     "ScheduleGroupLinkCreateSchema",
     "ScheduleGroupLinkUpdateSchema",
     "ScheduleGroupLinkFilterSchema",
     "ScheduleGroupLinkDeleteSchema",
-    "ScheduleGroupLinkReadSchema",
     "LessonBaseSchema",
     "LessonCreateSchema",
     "LessonUpdateSchema",
     "LessonFilterSchema",
     "LessonDeleteSchema",
-    "LessonReadSchema",
     "AttendanceBaseSchema",
     "AttendanceCreateSchema",
     "AttendanceUpdateSchema",
     "AttendanceFilterSchema",
     "AttendanceDeleteSchema",
-    "AttendanceReadSchema",
     "MarkBaseSchema",
     "MarkCreateSchema",
     "MarkUpdateSchema",
     "MarkFilterSchema",
     "MarkDeleteSchema",
-    "MarkReadSchema",
     "CommentBaseSchema",
     "CommentCreateSchema",
     "CommentUpdateSchema",
     "CommentFilterSchema",
     "CommentDeleteSchema",
-    "CommentReadSchema",
     "is_group_name_formatted",
     "is_speciality_formatted",
 ]

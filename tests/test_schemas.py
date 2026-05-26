@@ -21,21 +21,18 @@ from app.schemas.attendance import (
     AttendanceCreateSchema,
     AttendanceDeleteSchema,
     AttendanceFilterSchema,
-    AttendanceReadSchema,
     AttendanceUpdateSchema,
 )
 from app.schemas.comment import (
     CommentCreateSchema,
     CommentDeleteSchema,
     CommentFilterSchema,
-    CommentReadSchema,
     CommentUpdateSchema,
 )
 from app.schemas.group import (
     GroupCreateSchema,
     GroupDeleteSchema,
     GroupFilterSchema,
-    GroupReadSchema,
     GroupUpdateSchema,
     is_group_name_formatted,
     is_speciality_formatted,
@@ -44,42 +41,35 @@ from app.schemas.lesson import (
     LessonCreateSchema,
     LessonDeleteSchema,
     LessonFilterSchema,
-    LessonReadSchema,
     LessonUpdateSchema,
 )
 from app.schemas.mark import (
     MarkCreateSchema,
     MarkDeleteSchema,
     MarkFilterSchema,
-    MarkReadSchema,
     MarkUpdateSchema,
 )
 from app.schemas.schedule import (
     ScheduleCreateSchema,
     ScheduleDeleteSchema,
     ScheduleFilterSchema,
-    ScheduleReadSchema,
     ScheduleUpdateSchema,
 )
 from app.schemas.schedule_group_link import (
     ScheduleGroupLinkCreateSchema,
     ScheduleGroupLinkDeleteSchema,
     ScheduleGroupLinkFilterSchema,
-    ScheduleGroupLinkReadSchema,
     ScheduleGroupLinkUpdateSchema,
 )
 from app.schemas.student import (
     StudentCreateSchema,
     StudentDeleteSchema,
     StudentFilterSchema,
-    StudentReadSchema,
     StudentUpdateSchema,
 )
 
-
 Payload = dict[str, Any] | BaseModel | object
 SchemaType = type[BaseModel]
-
 
 @dataclass(frozen=True)
 class PayloadSet:
@@ -89,7 +79,6 @@ class PayloadSet:
 
     valid: tuple[Payload, ...]
     invalid: tuple[Payload, ...]
-
 
 @dataclass(frozen=True)
 class EntitySchemaCase:
@@ -101,13 +90,10 @@ class EntitySchemaCase:
     filter_schema: SchemaType
     update_schema: SchemaType
     delete_schema: SchemaType
-    read_schema: SchemaType
     create: PayloadSet
     filter: PayloadSet
     update: PayloadSet
     delete: PayloadSet
-    read: PayloadSet
-
 
 BASE_READ_FIELDS = {
     "id": 1,
@@ -132,7 +118,6 @@ def make_length_cases(max_len_by_field: dict[str, int]) -> dict[str, str]:
             (f"too_long_{field_name}", max_len + 1),
         )
     }
-
 
 GROUP_LENGTH_CASES = make_length_cases(GROUP_MAX_LEN)
 STUDENT_LENGTH_CASES = make_length_cases(STUDENT_MAX_LEN)
@@ -195,14 +180,12 @@ COMMENT_FULL = {
     "data": "Отличная работа",
 }
 
-
 SCHEMA_CASES_BY_ENTITY: dict[str, EntitySchemaCase] = {
     "group": EntitySchemaCase(
         create_schema=GroupCreateSchema,
         filter_schema=GroupFilterSchema,
         update_schema=GroupUpdateSchema,
         delete_schema=GroupDeleteSchema,
-        read_schema=GroupReadSchema,
         create=PayloadSet(
             valid=(
                 {"name": "обезьянки"},
@@ -398,26 +381,12 @@ SCHEMA_CASES_BY_ENTITY: dict[str, EntitySchemaCase] = {
                 {"unknown_field": "value"},
             ),
         ),
-        read=PayloadSet(
-            valid=(
-                BASE_READ_FIELDS,
-            ),
-            invalid=(
-                {},
-                Group(),
-                {"id": 1, "created_at": BASE_READ_FIELDS["created_at"]},
-                Group(id=1, created_at=BASE_READ_FIELDS["created_at"]),
-                {**BASE_READ_FIELDS, "name": "СМ1-21Б"},
-                {**BASE_READ_FIELDS, "speciality": "24.03.01_Информатика"},
-            ),
-        ),
     ),
     "student": EntitySchemaCase(
         create_schema=StudentCreateSchema,
         filter_schema=StudentFilterSchema,
         update_schema=StudentUpdateSchema,
         delete_schema=StudentDeleteSchema,
-        read_schema=StudentReadSchema,
         create=PayloadSet(
             valid=(
                 STUDENT_MINIMAL,
@@ -795,22 +764,12 @@ SCHEMA_CASES_BY_ENTITY: dict[str, EntitySchemaCase] = {
                 {"unknown_field": "data"},
             ),
         ),
-        read=PayloadSet(
-            valid=(
-                BASE_READ_FIELDS,
-            ),
-            invalid=(
-                {**BASE_READ_FIELDS, "group_id": 1},
-                {**BASE_READ_FIELDS, "surname": "Петров"},
-            ),
-        ),
     ),
     "schedule": EntitySchemaCase(
         create_schema=ScheduleCreateSchema,
         filter_schema=ScheduleFilterSchema,
         update_schema=ScheduleUpdateSchema,
         delete_schema=ScheduleDeleteSchema,
-        read_schema=ScheduleReadSchema,
         create=PayloadSet(
             valid=(
                 SCHEDULE_MINIMAL,
@@ -1132,22 +1091,12 @@ SCHEMA_CASES_BY_ENTITY: dict[str, EntitySchemaCase] = {
                 {"unknown_field": "data"},
             ),
         ),
-        read=PayloadSet(
-            valid=(
-                BASE_READ_FIELDS,
-            ),
-            invalid=(
-                {**BASE_READ_FIELDS, "day": "вт"},
-                {**BASE_READ_FIELDS, "time": time(8, 45)},
-            ),
-        ),
     ),
     "schedule_group_link": EntitySchemaCase(
         create_schema=ScheduleGroupLinkCreateSchema,
         filter_schema=ScheduleGroupLinkFilterSchema,
         update_schema=ScheduleGroupLinkUpdateSchema,
         delete_schema=ScheduleGroupLinkDeleteSchema,
-        read_schema=ScheduleGroupLinkReadSchema,
         create=PayloadSet(
             valid=(
                 SCHEDULE_GROUP_LINK_BASE,
@@ -1266,22 +1215,12 @@ SCHEMA_CASES_BY_ENTITY: dict[str, EntitySchemaCase] = {
                 {"unknown_field": "data"},
             ),
         ),
-        read=PayloadSet(
-            valid=(
-                BASE_READ_FIELDS,
-            ),
-            invalid=(
-                {**BASE_READ_FIELDS, "group_id": 1},
-                {**BASE_READ_FIELDS, "schedule_id": 2},
-            ),
-        ),
     ),
     "lesson": EntitySchemaCase(
         create_schema=LessonCreateSchema,
         filter_schema=LessonFilterSchema,
         update_schema=LessonUpdateSchema,
         delete_schema=LessonDeleteSchema,
-        read_schema=LessonReadSchema,
         create=PayloadSet(
             valid=(
                 LESSON_FULL,
@@ -1463,22 +1402,12 @@ SCHEMA_CASES_BY_ENTITY: dict[str, EntitySchemaCase] = {
                 {"unknown_field": "data"},
             ),
         ),
-        read=PayloadSet(
-            valid=(
-                BASE_READ_FIELDS,
-            ),
-            invalid=(
-                {**BASE_READ_FIELDS, "schedule_id": 1},
-                {**BASE_READ_FIELDS, "date": date(2026, 4, 19)},
-            ),
-        ),
     ),
     "attendance": EntitySchemaCase(
         create_schema=AttendanceCreateSchema,
         filter_schema=AttendanceFilterSchema,
         update_schema=AttendanceUpdateSchema,
         delete_schema=AttendanceDeleteSchema,
-        read_schema=AttendanceReadSchema,
         create=PayloadSet(
             valid=(
                 ATTENDANCE_FULL,
@@ -1623,22 +1552,12 @@ SCHEMA_CASES_BY_ENTITY: dict[str, EntitySchemaCase] = {
                 {"unknown_field": "data"},
             ),
         ),
-        read=PayloadSet(
-            valid=(
-                BASE_READ_FIELDS,
-            ),
-            invalid=(
-                {**BASE_READ_FIELDS, "student_id": 1},
-                {**BASE_READ_FIELDS, "is_visited": True},
-            ),
-        ),
     ),
     "mark": EntitySchemaCase(
         create_schema=MarkCreateSchema,
         filter_schema=MarkFilterSchema,
         update_schema=MarkUpdateSchema,
         delete_schema=MarkDeleteSchema,
-        read_schema=MarkReadSchema,
         create=PayloadSet(
             valid=(
                 MARK_BASE,
@@ -1783,22 +1702,12 @@ SCHEMA_CASES_BY_ENTITY: dict[str, EntitySchemaCase] = {
                 {"unknown_field": "data"},
             ),
         ),
-        read=PayloadSet(
-            valid=(
-                BASE_READ_FIELDS,
-            ),
-            invalid=(
-                {**BASE_READ_FIELDS, "student_id": 1},
-                {**BASE_READ_FIELDS, "data": 5},
-            ),
-        ),
     ),
     "comment": EntitySchemaCase(
         create_schema=CommentCreateSchema,
         filter_schema=CommentFilterSchema,
         update_schema=CommentUpdateSchema,
         delete_schema=CommentDeleteSchema,
-        read_schema=CommentReadSchema,
         create=PayloadSet(
             valid=(
                 COMMENT_FULL,
@@ -1993,18 +1902,8 @@ SCHEMA_CASES_BY_ENTITY: dict[str, EntitySchemaCase] = {
                 {"unknown_field": "data"},
             ),
         ),
-        read=PayloadSet(
-            valid=(
-                BASE_READ_FIELDS,
-            ),
-            invalid=(
-                {**BASE_READ_FIELDS, "student_id": 1},
-                {**BASE_READ_FIELDS, "data": "Отличная работа"},
-            ),
-        ),
     ),
 }
-
 
 def schema_params(operation_name: str, payload_kind: str) -> list[Any]:
     """
@@ -2025,7 +1924,6 @@ def schema_params(operation_name: str, payload_kind: str) -> list[Any]:
 
     return params
 
-
 def payload_to_dict(payload: Payload) -> dict[str, Any]:
     """
     Приводит dict, Pydantic-схему или ORM-объект к словарю переданных полей.
@@ -2042,7 +1940,6 @@ def payload_to_dict(payload: Payload) -> dict[str, Any]:
         if not key.startswith("_")
     }
 
-
 def assert_payload_values(
     schema: BaseModel,
     payload: Payload,
@@ -2058,7 +1955,6 @@ def assert_payload_values(
 
         assert getattr(schema, key) == value
 
-
 @pytest.mark.parametrize(("schema_class", "payload"), schema_params("create", "valid"))
 def test_create_schema_accepts_valid_payload(schema_class: SchemaType, payload: Payload):
     """
@@ -2068,7 +1964,6 @@ def test_create_schema_accepts_valid_payload(schema_class: SchemaType, payload: 
 
     assert_payload_values(schema, payload, {"id", "created_at", "updated_at"})
 
-
 @pytest.mark.parametrize(("schema_class", "payload"), schema_params("create", "invalid"))
 def test_create_schema_rejects_invalid_payload(schema_class: SchemaType, payload: Payload):
     """
@@ -2076,7 +1971,6 @@ def test_create_schema_rejects_invalid_payload(schema_class: SchemaType, payload
     """
     with pytest.raises(ValidationError):
         schema_class.model_validate(payload_to_dict(payload))
-
 
 @pytest.mark.parametrize(("schema_class", "payload"), schema_params("filter", "valid"))
 def test_filter_schema_accepts_valid_payload(schema_class: SchemaType, payload: Payload):
@@ -2087,7 +1981,6 @@ def test_filter_schema_accepts_valid_payload(schema_class: SchemaType, payload: 
 
     assert_payload_values(schema, payload)
 
-
 @pytest.mark.parametrize(("schema_class", "payload"), schema_params("filter", "invalid"))
 def test_filter_schema_rejects_invalid_payload(schema_class: SchemaType, payload: Payload):
     """
@@ -2095,7 +1988,6 @@ def test_filter_schema_rejects_invalid_payload(schema_class: SchemaType, payload
     """
     with pytest.raises(ValidationError):
         schema_class.model_validate(payload_to_dict(payload))
-
 
 @pytest.mark.parametrize(("schema_class", "payload"), schema_params("update", "valid"))
 def test_update_schema_accepts_valid_payload(schema_class: SchemaType, payload: Payload):
@@ -2106,7 +1998,6 @@ def test_update_schema_accepts_valid_payload(schema_class: SchemaType, payload: 
 
     assert_payload_values(schema, payload, {"id", "created_at", "updated_at"})
 
-
 @pytest.mark.parametrize(("schema_class", "payload"), schema_params("update", "invalid"))
 def test_update_schema_rejects_invalid_payload(schema_class: SchemaType, payload: Payload):
     """
@@ -2114,7 +2005,6 @@ def test_update_schema_rejects_invalid_payload(schema_class: SchemaType, payload
     """
     with pytest.raises(ValidationError):
         schema_class.model_validate(payload_to_dict(payload))
-
 
 @pytest.mark.parametrize(("schema_class", "payload"), schema_params("delete", "valid"))
 def test_delete_schema_accepts_valid_payload(schema_class: SchemaType, payload: Payload):
@@ -2125,7 +2015,6 @@ def test_delete_schema_accepts_valid_payload(schema_class: SchemaType, payload: 
 
     assert_payload_values(schema, payload)
 
-
 @pytest.mark.parametrize(("schema_class", "payload"), schema_params("delete", "invalid"))
 def test_delete_schema_rejects_invalid_payload(schema_class: SchemaType, payload: Payload):
     """
@@ -2133,26 +2022,6 @@ def test_delete_schema_rejects_invalid_payload(schema_class: SchemaType, payload
     """
     with pytest.raises(ValidationError):
         schema_class.model_validate(payload_to_dict(payload))
-
-
-@pytest.mark.parametrize(("schema_class", "payload"), schema_params("read", "valid"))
-def test_read_schema_accepts_valid_payload(schema_class: SchemaType, payload: Payload):
-    """
-    Read-схема корректно валидирует данные чтения.
-    """
-    schema = schema_class.model_validate(payload_to_dict(payload))
-
-    assert_payload_values(schema, payload)
-
-
-@pytest.mark.parametrize(("schema_class", "payload"), schema_params("read", "invalid"))
-def test_read_schema_rejects_invalid_payload(schema_class: SchemaType, payload: Payload):
-    """
-    Read-схема отклоняет некорректные данные чтения.
-    """
-    with pytest.raises(ValidationError):
-        schema_class.model_validate(payload_to_dict(payload))
-
 
 def test_is_group_name_formatted():
     """
@@ -2168,7 +2037,6 @@ def test_is_group_name_formatted():
     for value, expected in values.items():
         assert is_group_name_formatted(value) is expected
 
-
 def test_is_speciality_formatted():
     """
     Helper для формата специальности работает корректно.
@@ -2182,7 +2050,6 @@ def test_is_speciality_formatted():
 
     for value, expected in values.items():
         assert is_speciality_formatted(value) is expected
-
 
 def test_group_create_schema_ignores_service_fields():
     """
@@ -2203,8 +2070,6 @@ def test_group_create_schema_ignores_service_fields():
         "speciality": "09.03.01_Информатика",
     }
 
-
-
 def test_group_update_schema_ignores_service_fields():
     """
     GroupUpdateSchema игнорирует служебные поля.
@@ -2221,7 +2086,6 @@ def test_group_update_schema_ignores_service_fields():
     assert schema.model_dump(exclude_unset=True) == {
         "name": "ИУ7-31",
     }
-
 
 @pytest.mark.parametrize(
     ("schema_class", "payload", "expected"),
@@ -2348,7 +2212,6 @@ def test_create_schema_ignores_service_fields(
 
     assert schema.model_dump(exclude_unset=True) == expected
 
-
 @pytest.mark.parametrize(
     ("schema_class", "payload", "expected"),
     (
@@ -2426,7 +2289,6 @@ def test_update_schema_ignores_service_fields(
 
     assert schema.model_dump(exclude_unset=True) == expected
 
-
 @pytest.mark.parametrize(
     ("schema_class", "payload"),
     (
@@ -2449,7 +2311,6 @@ def test_filter_schema_keeps_service_fields(
     schema = schema_class.model_validate(payload)
 
     assert schema.model_dump(exclude_unset=True) == payload
-
 
 @pytest.mark.parametrize(
     ("schema_class", "payload"),

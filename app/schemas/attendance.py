@@ -8,7 +8,6 @@ from pydantic import model_validator
 
 from app.schemas.base import (
     AppBaseSchema,
-    BaseReadSchema,
     strip_service_fields,
     validate_non_empty_mapping,
 )
@@ -112,11 +111,3 @@ class AttendanceDeleteSchema(AttendanceBaseSchema):
             data,
             "Фильтр удаления не должен быть пустым.",
         )
-
-
-class AttendanceReadSchema(BaseReadSchema):
-    """
-    Заглушка для схемы чтения посещаемости.
-    """
-
-    pass

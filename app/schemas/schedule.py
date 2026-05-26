@@ -10,7 +10,6 @@ from pydantic import Field, field_validator, model_validator
 from app.models.schedule import MAX_LEN
 from app.schemas.base import (
     AppBaseSchema,
-    BaseReadSchema,
     strip_service_fields,
     validate_non_empty_mapping,
     validate_not_empty_string,
@@ -136,11 +135,3 @@ class ScheduleDeleteSchema(ScheduleBaseSchema):
             data,
             "Фильтр удаления не должен быть пустым.",
         )
-
-
-class ScheduleReadSchema(BaseReadSchema):
-    """
-    Заглушка для схемы чтения расписания.
-    """
-
-    pass
