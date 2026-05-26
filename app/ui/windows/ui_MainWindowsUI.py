@@ -28,7 +28,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QTextEdit,
     QTimeEdit,
     QVBoxLayout,
     QWidget,
@@ -101,7 +100,7 @@ class MainWindow(QMainWindow):
         self.ui.sourceWidget.setVisible(True)
         self.ui.mainWidget.setCurrentWidget(self.ui.pageSchedule)
 
-        self._configure_settings_tools()
+        self._configure_menubar()
         self._apply_styles()
         self._apply_layout_visuals()
         self._configure_inputs()
@@ -119,6 +118,7 @@ class MainWindow(QMainWindow):
         if not getattr(self, "_ui_ready", False):
             return
 
+        self._apply_responsive_margins()
         groups_columns = self._grid_columns(compact=False)
         settings_groups_columns = self._grid_columns(compact=True)
         if groups_columns != self._groups_grid_columns:
@@ -158,35 +158,60 @@ class MainWindow(QMainWindow):
         )
         self.settings_store.sync()
 
-    def _configure_settings_tools(self) -> None:
-        self.settingsExportButton = QPushButton("Export database")
-        self.settingsExportButton.setObjectName("SettingsToolButton")
-        self.settingsImportButton = QPushButton("Import database")
-        self.settingsImportButton.setObjectName("SettingsToolButton")
-        self.settingsThemeButton = QPushButton()
-        self.settingsThemeButton.setObjectName("SettingsToolButton")
+    def _configure_menubar(self) -> None:
+        self.ui.menu.setTitle("Settings")
+        self.ui.menu.clear()
+
+        self.ui.action.setText("Import database...")
+        self.ui.action_3.setText("Export database...")
+        self.ui.action_4.setText("")
+        self.ui.action_5.setText("")
+        self.ui.action_6.setText("")
         self._update_theme_button_text()
 
-        toolbar = QHBoxLayout()
-        toolbar.setObjectName("settingsTopTools")
-        toolbar.setSpacing(12)
-        toolbar.addWidget(self.settingsImportButton)
-        toolbar.addWidget(self.settingsExportButton)
-        toolbar.addWidget(self.settingsThemeButton)
-        toolbar.addStretch()
-        self.ui.mainSettings.insertLayout(1, toolbar)
+        self.ui.menu.addAction(self.ui.action)
+        self.ui.menu.addAction(self.ui.action_3)
+        self.ui.menu.addSeparator()
+        self.ui.menu.addAction(self.ui.action_4)
 
     def _configure_inputs(self) -> None:
+        self._replace_semester_text_edits()
         for text_box in (
             self.ui.settingsSemesterActionDateTextBox,
             self.ui.settingsSemesterActionTextBox,
         ):
-            text_box.setAcceptRichText(False)
-            text_box.setTabChangesFocus(True)
-            text_box.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            text_box.setFixedHeight(42)
+            text_box.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Fixed,
+            )
 
         self.ui.settingsSemesterActionDateTextBox.setPlaceholderText("YYYY-MM-DD")
         self.ui.settingsSemesterActionTextBox.setPlaceholderText("17")
+
+    def _replace_semester_text_edits(self) -> None:
+        replacements = (
+            (
+                "settingsSemesterActionDateTextBox",
+                self.ui.settingsSemesterActionDate,
+            ),
+            (
+                "settingsSemesterActionTextBox",
+                self.ui.settingsSemesterActionWeekInput,
+            ),
+        )
+        for attribute_name, layout in replacements:
+            old_widget = getattr(self.ui, attribute_name)
+            index = layout.indexOf(old_widget)
+            if index < 0:
+                continue
+            new_widget = QLineEdit(old_widget.parent())
+            new_widget.setObjectName(old_widget.objectName())
+            layout.removeWidget(old_widget)
+            old_widget.setParent(None)
+            old_widget.deleteLater()
+            layout.insertWidget(index, new_widget)
+            setattr(self.ui, attribute_name, new_widget)
 
     def _connect_actions(self) -> None:
         self.ui.mainButtonSchedule.clicked.connect(
@@ -236,9 +261,9 @@ class MainWindow(QMainWindow):
         self.ui.settingsStudentsChangeChooseButton.clicked.connect(
             self.show_student_filter_menu
         )
-        self.settingsImportButton.clicked.connect(self.show_import_dialog)
-        self.settingsExportButton.clicked.connect(self.export_database)
-        self.settingsThemeButton.clicked.connect(self.toggle_theme)
+        self.ui.action.triggered.connect(self.show_import_dialog)
+        self.ui.action_3.triggered.connect(self.export_database)
+        self.ui.action_4.triggered.connect(self.toggle_theme)
 
     def _show_main_page(self, page: QWidget) -> None:
         self.repository.refresh()
@@ -322,20 +347,20 @@ class MainWindow(QMainWindow):
     def change_semester_week_input(self, delta: int) -> None:
         try:
             current = parse_week_count(
-                self.ui.settingsSemesterActionTextBox.toPlainText() or "1"
+                self.ui.settingsSemesterActionTextBox.text() or "1"
             )
         except ValueError:
             current = self.semester_settings.total_weeks
         current = max(1, min(52, current + delta))
-        self.ui.settingsSemesterActionTextBox.setPlainText(str(current))
+        self.ui.settingsSemesterActionTextBox.setText(str(current))
 
     def apply_semester_settings(self) -> None:
         try:
             start_date = parse_date_input(
-                self.ui.settingsSemesterActionDateTextBox.toPlainText()
+                self.ui.settingsSemesterActionDateTextBox.text()
             )
             total_weeks = parse_week_count(
-                self.ui.settingsSemesterActionTextBox.toPlainText()
+                self.ui.settingsSemesterActionTextBox.text()
             )
         except ValueError as exc:
             QMessageBox.warning(self, "Semester settings", str(exc))
@@ -364,10 +389,10 @@ class MainWindow(QMainWindow):
         self.refresh_all()
 
     def _populate_semester_inputs(self) -> None:
-        self.ui.settingsSemesterActionDateTextBox.setPlainText(
+        self.ui.settingsSemesterActionDateTextBox.setText(
             format_input_date(self.semester_settings.start_date)
         )
-        self.ui.settingsSemesterActionTextBox.setPlainText(
+        self.ui.settingsSemesterActionTextBox.setText(
             str(self.semester_settings.total_weeks)
         )
 
@@ -468,7 +493,6 @@ class MainWindow(QMainWindow):
         for schedule in schedules:
             card = ScheduleTemplateCard(
                 schedule,
-                self.repository.schedule_topic(schedule),
                 self.repository.schedule_groups_text(schedule),
             )
             card.edit_clicked.connect(self.show_schedule_dialog)
@@ -611,12 +635,13 @@ class MainWindow(QMainWindow):
         top = QHBoxLayout()
         title = QLabel(lesson.topic or "Untitled lesson")
         title.setObjectName("DetailTitle")
+        title.setWordWrap(True)
         type_label = QLabel(lesson.schedule.type)
         type_label.setObjectName("DarkBadgeLarge")
         type_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         edit_button = QPushButton("Edit")
         edit_button.setObjectName("CardEditButton")
-        edit_button.clicked.connect(lambda: self.show_schedule_dialog(lesson.schedule))
+        edit_button.clicked.connect(lambda: self.show_lesson_topic_dialog(lesson))
         top.addWidget(title)
         top.addStretch()
         top.addWidget(type_label)
@@ -740,7 +765,6 @@ class MainWindow(QMainWindow):
             held_count = sum(1 for lesson in schedule.lessons if lesson.date <= date.today())
             lessons_layout.addWidget(
                 self._make_group_lesson_row(
-                    self.repository.schedule_topic(schedule),
                     schedule,
                     held_count,
                 )
@@ -751,7 +775,6 @@ class MainWindow(QMainWindow):
 
     def _make_group_lesson_row(
         self,
-        topic: str,
         schedule: Schedule,
         held_count: int,
     ) -> QFrame:
@@ -760,7 +783,9 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(22, 16, 22, 16)
         text = QVBoxLayout()
-        title = QLabel(f"{topic}  {schedule.type}")
+        title = QLabel(
+            f"{schedule.day} {schedule.time.strftime('%H:%M')}  {schedule.type}"
+        )
         title.setObjectName("SettingsCardTitle")
         info = QLabel(
             f"{schedule.time.strftime('%H:%M')} on {schedule.day}s "
@@ -815,10 +840,9 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        topic = self.repository.schedule_topic(schedule)
         for lesson in lessons:
             button = QPushButton(
-                f"{lesson.date.strftime('%b %d')}\n{lesson.topic or topic}"
+                f"{lesson.date.strftime('%b %d')}\n{lesson.topic or 'Untitled lesson'}"
             )
             button.setObjectName("LessonDateButton")
             button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -937,10 +961,10 @@ class MainWindow(QMainWindow):
         profile_button.clicked.connect(
             lambda checked=False, current=student: self.show_student_detail(current)
         )
-        save_button = QPushButton("Save")
-        save_button.setObjectName("PrimarySmallButton")
-        save_button.clicked.connect(
-            lambda checked=False, current_lesson=lesson, current_student=student: (
+        actions_layout.addWidget(profile_button)
+
+        save_current_row = (
+            lambda *args, current_lesson=lesson, current_student=student: (
                 self._save_lesson_student_result(
                     current_lesson,
                     current_student,
@@ -950,8 +974,9 @@ class MainWindow(QMainWindow):
                 )
             )
         )
-        actions_layout.addWidget(profile_button)
-        actions_layout.addWidget(save_button)
+        attendance_input.toggled.connect(save_current_row)
+        comment_input.editingFinished.connect(save_current_row)
+        mark_input.editingFinished.connect(save_current_row)
 
         return make_table_row(
             [
@@ -1017,13 +1042,7 @@ class MainWindow(QMainWindow):
         except RepositoryError as exc:
             QMessageBox.warning(self, "Lesson", str(exc))
             return
-        self.render_schedule()
-        self.render_groups()
-        self.render_settings_groups()
-        self.render_settings_students()
-        refreshed_lesson = self.repository.get_lesson(lesson.id)
-        if refreshed_lesson is not None:
-            self.show_lesson_detail(refreshed_lesson, push_history=False)
+        self.repository.refresh()
 
     def _show_students_settings_page(self) -> None:
         self._show_main_page(self.ui.pageSettings)
@@ -1071,12 +1090,44 @@ class MainWindow(QMainWindow):
         self.ui.mainWidget.setCurrentWidget(scroll)
         self._sync_nav_state()
 
+    def show_lesson_topic_dialog(self, lesson: Lesson) -> None:
+        current_lesson = self.repository.get_lesson(lesson.id)
+        if current_lesson is None:
+            QMessageBox.warning(self, "Lesson", "Lesson was not found.")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Lesson topic")
+        form = QFormLayout(dialog)
+        topic_input = QLineEdit(current_lesson.topic or "")
+        form.addRow("Topic", topic_input)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        try:
+            self.repository.update_lesson_topic(current_lesson, topic_input.text())
+        except RepositoryError as exc:
+            QMessageBox.warning(self, "Lesson", str(exc))
+            return
+        self.refresh_all()
+        refreshed_lesson = self.repository.get_lesson(current_lesson.id)
+        if refreshed_lesson is not None:
+            self.show_lesson_detail(refreshed_lesson, push_history=False)
+
     def show_schedule_dialog(self, schedule: Schedule | None = None) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("Schedule Template")
         form = QFormLayout(dialog)
 
-        topic_input = QLineEdit()
         day_input = QComboBox()
         day_input.addItems(DAY_NAMES)
         time_input = QTimeEdit()
@@ -1092,7 +1143,6 @@ class MainWindow(QMainWindow):
         groups = self.repository.list_groups()
         selected_group_ids = set()
         if schedule is not None:
-            topic_input.setText(self.repository.schedule_topic(schedule))
             day_input.setCurrentText(schedule.day)
             time_input.setTime(QTime(schedule.time.hour, schedule.time.minute))
             week_input.setCurrentText(schedule.odd_or_even)
@@ -1107,7 +1157,6 @@ class MainWindow(QMainWindow):
                 item.setSelected(True)
             group_input.addItem(item)
 
-        form.addRow("Topic", topic_input)
         form.addRow("Day", day_input)
         form.addRow("Time", time_input)
         form.addRow("Week", week_input)
@@ -1135,11 +1184,10 @@ class MainWindow(QMainWindow):
             return
 
         lesson_time = time(time_input.time().hour(), time_input.time().minute())
-        topic = topic_input.text().strip() or "Untitled lesson"
         try:
             if schedule is None:
                 self.repository.create_schedule(
-                    topic,
+                    None,
                     selected_groups,
                     day_input.currentText(),
                     lesson_time,
@@ -1151,7 +1199,7 @@ class MainWindow(QMainWindow):
             else:
                 self.repository.update_schedule(
                     schedule,
-                    topic,
+                    None,
                     selected_groups,
                     day_input.currentText(),
                     lesson_time,
@@ -1328,38 +1376,16 @@ class MainWindow(QMainWindow):
         dialog.setWindowTitle("Import database")
         form = QFormLayout(dialog)
 
+        path_input = QLineEdit(file_path)
+        path_input.setReadOnly(True)
+
         strategy_input = QComboBox()
-        strategy_input.addItem("Standard workbook", "standard")
-        strategy_input.addItem("Smart table", "smart")
-        strategy_input.addItem("Strict table", "strict")
+        strategy_input.addItem("Standard exported workbook", "standard")
+        strategy_input.addItem("Smart groups/students search", "smart")
+        strategy_input.addItem("Template table search", "template")
 
-        mode_input = QComboBox()
-        mode_input.addItem("Merge, skip existing", "merge")
-        mode_input.addItem("Replace database", "replace")
-
-        sheet_input = QLineEdit()
-        sheet_input.setPlaceholderText("Sheet name for smart/strict")
-        range_input = QLineEdit()
-        range_input.setPlaceholderText("A1:H20")
-        entity_input = QComboBox()
-        entity_input.addItems(
-            [
-                "groups",
-                "schedules",
-                "students",
-                "schedule_group_links",
-                "lessons",
-                "attendances",
-                "marks",
-                "comments",
-            ]
-        )
-
+        form.addRow("File", path_input)
         form.addRow("Strategy", strategy_input)
-        form.addRow("Mode", mode_input)
-        form.addRow("Sheet", sheet_input)
-        form.addRow("Range", range_input)
-        form.addRow("Entity", entity_input)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -1373,24 +1399,11 @@ class MainWindow(QMainWindow):
             return
 
         strategy = strategy_input.currentData()
-        mode = mode_input.currentData()
-        if strategy in {"smart", "strict"}:
-            if not sheet_input.text().strip() or not range_input.text().strip():
-                QMessageBox.warning(
-                    self,
-                    "Import database",
-                    "Sheet and range are required for smart and strict import.",
-                )
-                return
-
         try:
             preview = self.repository.preview_import_from_xlsx(
                 file_path,
                 strategy=strategy,
-                mode=mode,
-                sheet_name=sheet_input.text().strip(),
-                cell_range=range_input.text().strip(),
-                entity_type=entity_input.currentText(),
+                mode="merge",
             )
         except (RepositoryError, ValueError) as exc:
             QMessageBox.warning(self, "Import database", str(exc))
@@ -1444,7 +1457,7 @@ class MainWindow(QMainWindow):
             (
                 "Mode: replace current database"
                 if preview.mode == "replace"
-                else "Mode: merge and skip existing rows"
+                else "Mode: merge and update existing rows"
             ),
             "",
             "Rows to import:",
@@ -1472,9 +1485,9 @@ class MainWindow(QMainWindow):
         self._apply_styles()
 
     def _update_theme_button_text(self) -> None:
-        if hasattr(self, "settingsThemeButton"):
+        if hasattr(self.ui, "action_4"):
             next_theme = "dark" if self.current_theme == "light" else "light"
-            self.settingsThemeButton.setText(f"Switch to {next_theme} theme")
+            self.ui.action_4.setText(f"Switch to {next_theme} theme")
 
     def _theme_path(self, theme_name: str) -> Path:
         return Path(__file__).resolve().parents[1] / "themes" / f"{theme_name}.qss"
@@ -2104,6 +2117,9 @@ class MainWindow(QMainWindow):
         ui.SettingsSemesterMain.setStretch(1, 0)
         ui.SettingsSemesterMain.setStretch(2, 1)
         ui.settingsSemesterAction.setSpacing(18)
+        ui.settingsSemesterAction.setStretch(0, 0)
+        ui.settingsSemesterAction.setStretch(1, 0)
+        ui.settingsSemesterAction.setStretch(2, 0)
         ui.settingsSemesterActionDate.setSpacing(8)
         ui.settingsSemesterActionWeek.setSpacing(14)
         ui.settingsSemesterActionWeek.setStretch(0, 1)
@@ -2122,13 +2138,53 @@ class MainWindow(QMainWindow):
             ui.settingsSemesterActionSaveButton,
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
         )
+        for label in (
+            ui.settingsSemesterActionDateLabelTip1,
+            ui.settingsSemesterActionDateLabelTip2,
+            ui.settingsSemesterActionLabelTip1,
+            ui.settingsSemesterActionLabelTip2,
+            ui.settingsSemesterTip2Label,
+        ):
+            label.setWordWrap(True)
+            label.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Preferred,
+            )
+        self._apply_responsive_margins()
+
+    def _apply_responsive_margins(self) -> None:
+        ui = self.ui
+        width = max(self.width(), ui.mainWidget.width())
+        outer_margin = 28 if width < 1000 else 56 if width < 1400 else 104
+        schedule_margin = 24 if width < 1000 else 56 if width < 1400 else 120
+        nav_top = 22 if width < 1000 else 34 if width < 1400 else 48
+
+        ui.mainButtons.setContentsMargins(
+            outer_margin,
+            nav_top,
+            outer_margin,
+            max(18, nav_top // 2),
+        )
+        ui.mainSchedule.setContentsMargins(
+            schedule_margin,
+            24,
+            schedule_margin,
+            24,
+        )
+        ui.mainGroups.setContentsMargins(outer_margin, 28, outer_margin, 28)
+        ui.mainSettings.setContentsMargins(outer_margin, 28, outer_margin, 0)
+        ui.settingsAlternative.setContentsMargins(
+            outer_margin,
+            0,
+            outer_margin,
+            28,
+        )
 
 
 def main() -> None:
     app = QApplication(sys.argv)
     window = MainWindow()
-    window.resize(2000, 1200)
-    window.show()
+    window.showMaximized()
     sys.exit(app.exec())
 
 

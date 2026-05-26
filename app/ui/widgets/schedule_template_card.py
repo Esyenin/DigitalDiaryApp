@@ -8,7 +8,7 @@ class ScheduleTemplateCard(QFrame):
     edit_clicked = Signal(object)
     delete_clicked = Signal(object)
 
-    def __init__(self, schedule, topic: str, groups_text: str, parent=None) -> None:
+    def __init__(self, schedule, groups_text: str, parent=None) -> None:
         super().__init__(parent)
         self.schedule = schedule
         self.setObjectName("SettingsCard")
@@ -27,12 +27,8 @@ class ScheduleTemplateCard(QFrame):
         title.setObjectName("SettingsCardTitle")
         groups = QLabel(f"Groups: {groups_text}")
         groups.setObjectName("SettingsCardSubtitle")
-        subject = QLabel(topic)
-        subject.setObjectName("SettingsCardText")
-
         text_box.addWidget(title)
         text_box.addWidget(groups)
-        text_box.addWidget(subject)
 
         edit_button = QPushButton("Edit")
         edit_button.setObjectName("CardEditButton")

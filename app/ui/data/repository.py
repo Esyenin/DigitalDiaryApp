@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
+from pydantic import ValidationError
 from sqlalchemy import create_engine, delete, event, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
@@ -17,7 +18,19 @@ from app.io_tools.engine.processing_models import (
     ImportProcessingResult,
     StrictImportResult,
 )
+from app.io_tools.tabular.entity_schema_rules import (
+    CREATE_SCHEMA_BY_ENTITY,
+    STRICT_CREATE_SCHEMA_BY_ENTITY,
+)
+from app.io_tools.tabular.field_aliases import (
+    build_direct_alias_index,
+    build_reference_alias_index,
+    normalize_tabular_header,
+)
+from app.io_tools.tabular.models import ExtractedTable
 from app.io_tools.xlsx_config import XLSX_SHEETS_ORDER
+from app.io_tools.xlsx_config import XLSX_COLUMNS_BY_SHEET
+from app.io_tools.xlsx_config import XLSX_REQUIRED_COLUMNS_BY_SHEET
 from app.models import (
     Attendance,
     Base,
@@ -61,6 +74,7 @@ class ImportPreview:
 class DiaryRepository:
     """Thin UI-facing repository over the existing SQLAlchemy models."""
 
+    _smart_entity_types = ("groups", "students")
     _model_by_sheet = {
         "groups": Group,
         "schedules": Schedule,
@@ -90,6 +104,8 @@ class DiaryRepository:
         self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
         self.session: Session = self.session_factory()
         self.import_export_service = ImportExportService()
+        self._direct_alias_index = build_direct_alias_index()
+        self._reference_alias_index = build_reference_alias_index()
 
     @staticmethod
     def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
@@ -211,15 +227,16 @@ class DiaryRepository:
 
     def ensure_lessons_for_semester(self, settings: SemesterSettings) -> None:
         for schedule in self.list_schedules():
-            self.ensure_lessons_for_schedule(schedule, self.schedule_topic(schedule), settings)
+            self.ensure_lessons_for_schedule(schedule, None, settings)
         self._commit_or_raise("Lessons were not generated for the semester.")
 
     def ensure_lessons_for_schedule(
         self,
         schedule: Schedule,
-        topic: str,
+        topic: str | None,
         settings: SemesterSettings,
     ) -> None:
+        default_topic = (topic or "").strip() or None
         for week_offset in range(settings.total_weeks):
             week_number = week_offset + 1
             if week_type_for_number(week_number) != schedule.odd_or_even:
@@ -236,10 +253,8 @@ class DiaryRepository:
             )
             if lesson is None:
                 self.session.add(
-                    Lesson(schedule_id=schedule.id, topic=topic, date=lesson_date)
+                    Lesson(schedule_id=schedule.id, topic=default_topic, date=lesson_date)
                 )
-            elif not lesson.topic:
-                lesson.topic = topic
 
     def ensure_attendance_and_marks(self) -> None:
         """Kept for older UI calls; records are now created only by teacher input."""
@@ -390,6 +405,13 @@ class DiaryRepository:
             if lesson.topic:
                 return lesson.topic
         return "Untitled lesson"
+
+    def update_lesson_topic(self, lesson: Lesson, topic: str | None) -> None:
+        cleaned_topic = (topic or "").strip() or None
+        if cleaned_topic is not None and len(cleaned_topic) > 512:
+            raise RepositoryError("Lesson topic must be 512 characters or shorter.")
+        lesson.topic = cleaned_topic
+        self._commit_or_raise("Lesson topic was not updated.")
 
     def full_student_name(self, student: Student) -> str:
         return f"{student.first_name} {student.surname}"
@@ -737,7 +759,7 @@ class DiaryRepository:
 
     def create_schedule(
         self,
-        topic: str,
+        topic: str | None,
         groups: list[Group],
         day: str,
         lesson_time: time,
@@ -771,7 +793,7 @@ class DiaryRepository:
     def update_schedule(
         self,
         schedule: Schedule,
-        topic: str,
+        topic: str | None,
         groups: list[Group],
         day: str,
         lesson_time: time,
@@ -788,6 +810,9 @@ class DiaryRepository:
             lesson_type,
             current_schedule_id=schedule.id,
         )
+        regenerate_lessons = (
+            schedule.day != day or schedule.odd_or_even != week_type
+        )
         schedule.day = day
         schedule.time = lesson_time
         schedule.odd_or_even = week_type
@@ -798,9 +823,10 @@ class DiaryRepository:
         self.session.flush()
         for group in groups:
             self.session.add(ScheduleGroupLink(group_id=group.id, schedule_id=schedule.id))
-        for lesson in list(schedule.lessons):
-            self.session.delete(lesson)
-        self.session.flush()
+        if regenerate_lessons:
+            for lesson in list(schedule.lessons):
+                self.session.delete(lesson)
+            self.session.flush()
         self.ensure_lessons_for_schedule(schedule, topic, settings)
         self._commit_or_raise("Schedule template was not updated.")
 
@@ -933,12 +959,19 @@ class DiaryRepository:
         file_path: str | Path,
         *,
         strategy: str,
-        mode: str,
+        mode: str = "merge",
         sheet_name: str | None = None,
         cell_range: str | None = None,
         entity_type: str | None = None,
     ) -> ImportPreview:
         source_path = Path(file_path)
+        if strategy == "smart":
+            return self._preview_smart_import(source_path, mode)
+        if strategy == "template" or (
+            strategy == "strict" and not sheet_name and not cell_range
+        ):
+            return self._preview_template_import(source_path, mode)
+
         request = ImportRequest(
             source_path=source_path,
             format_name="xlsx",
@@ -959,6 +992,304 @@ class DiaryRepository:
             errors=errors,
         )
 
+    def _preview_smart_import(self, source_path: Path, mode: str) -> ImportPreview:
+        data: dict[str, list[dict[str, object]]] = {
+            entity_type: [] for entity_type in self._smart_entity_types
+        }
+        warnings: list[str] = []
+        errors: list[str] = []
+
+        for table in self._read_detected_tables(source_path, warnings):
+            entity_type = self._select_smart_entity(table)
+            if entity_type is None:
+                continue
+            payloads, table_warnings = self._smart_payloads_from_table(
+                entity_type,
+                table,
+            )
+            data[entity_type].extend(payloads)
+            warnings.extend(table_warnings)
+
+        if not any(data.values()):
+            warnings.append("Smart import did not find groups or students.")
+
+        return ImportPreview(
+            source_path=source_path,
+            strategy="smart",
+            mode=mode,
+            data=data,
+            warnings=warnings,
+            errors=errors,
+        )
+
+    def _preview_template_import(self, source_path: Path, mode: str) -> ImportPreview:
+        data: dict[str, list[dict[str, object]]] = {
+            entity_type: [] for entity_type in XLSX_SHEETS_ORDER
+        }
+        warnings: list[str] = []
+        errors: list[str] = []
+
+        for table in self._read_detected_tables(source_path, warnings):
+            entity_type = self._select_template_entity(table)
+            if entity_type is None:
+                continue
+            payloads, table_warnings = self._template_payloads_from_table(
+                entity_type,
+                table,
+            )
+            data[entity_type].extend(payloads)
+            warnings.extend(table_warnings)
+
+        if not any(data.values()):
+            warnings.append("Template import did not find matching model tables.")
+
+        return ImportPreview(
+            source_path=source_path,
+            strategy="template",
+            mode=mode,
+            data=data,
+            warnings=warnings,
+            errors=errors,
+        )
+
+    def _read_detected_tables(
+        self,
+        source_path: Path,
+        warnings: list[str],
+    ) -> list[ExtractedTable]:
+        importer = self.import_export_service.import_dispatcher.xlsx_importer
+        regions = importer.find_table_candidates(source_path, min_score=0.35)
+        seen: set[tuple[str, str]] = set()
+        tables: list[ExtractedTable] = []
+
+        for region in sorted(
+            regions,
+            key=lambda item: (item.sheet.lower(), item.min_row, item.min_col),
+        ):
+            key = (region.sheet, region.range)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                tables.append(
+                    importer.read_table_range(
+                        source_path,
+                        region.sheet,
+                        region.range,
+                    )
+                )
+            except ValueError as exc:
+                warnings.append(
+                    f"Skipped table {region.sheet}!{region.range}: {exc}"
+                )
+
+        return tables
+
+    def _select_smart_entity(self, table: ExtractedTable) -> str | None:
+        scored = [
+            (self._smart_header_score(entity_type, table.headers), entity_type)
+            for entity_type in self._smart_entity_types
+        ]
+        score, entity_type = max(scored, key=lambda item: item[0])
+        return entity_type if score > 0 else None
+
+    def _smart_header_score(
+        self,
+        entity_type: str,
+        headers: tuple[str, ...],
+    ) -> float:
+        direct_index = self._direct_alias_index.get(entity_type, {})
+        reference_index = self._reference_alias_index.get(entity_type, {})
+        direct_fields: set[str] = set()
+        reference_fields: set[str] = set()
+
+        for header in headers:
+            normalized_header = normalize_tabular_header(header)
+            if normalized_header in direct_index:
+                direct_fields.add(direct_index[normalized_header])
+            if normalized_header in reference_index:
+                reference_key, field_name = reference_index[normalized_header]
+                reference_fields.add(f"{reference_key}.{field_name}")
+
+        if entity_type == "groups":
+            if "name" not in direct_fields:
+                return 0
+        elif entity_type == "students":
+            has_group = "group_id" in direct_fields or "group.name" in reference_fields
+            if not {"surname", "first_name"}.issubset(direct_fields) or not has_group:
+                return 0
+
+        matched_count = len(direct_fields) + len(reference_fields)
+        return matched_count / max(len(headers), 1)
+
+    def _smart_payloads_from_table(
+        self,
+        entity_type: str,
+        table: ExtractedTable,
+    ) -> tuple[list[dict[str, object]], list[str]]:
+        direct_index = self._direct_alias_index.get(entity_type, {})
+        reference_index = self._reference_alias_index.get(entity_type, {})
+        payloads: list[dict[str, object]] = []
+        warnings: list[str] = []
+
+        for row_number, row in enumerate(table.rows, start=2):
+            payload: dict[str, object] = {}
+            for header, raw_value in row.items():
+                value = self._clean_import_cell(raw_value)
+                if value is None:
+                    continue
+
+                normalized_header = normalize_tabular_header(header)
+                if normalized_header in direct_index:
+                    payload[direct_index[normalized_header]] = value
+                    continue
+
+                if normalized_header in reference_index:
+                    reference_key, field_name = reference_index[normalized_header]
+                    if entity_type == "students" and reference_key == "group" and field_name == "name":
+                        payload["group_name"] = value
+
+            if entity_type == "groups":
+                if not payload.get("name"):
+                    warnings.append(
+                        f"Skipped {table.sheet}!{table.range} row {row_number}: group name is required."
+                    )
+                    continue
+                schema = CREATE_SCHEMA_BY_ENTITY["groups"]
+                try:
+                    validated = schema.model_validate(payload)
+                except ValidationError as exc:
+                    warnings.append(
+                        f"Skipped {table.sheet}!{table.range} row {row_number}: "
+                        + "; ".join(error["msg"] for error in exc.errors())
+                    )
+                    continue
+                payloads.append(validated.model_dump(exclude_unset=True))
+                continue
+
+            missing = [
+                field_name
+                for field_name in ("surname", "first_name")
+                if not payload.get(field_name)
+            ]
+            if not payload.get("group_id") and not payload.get("group_name"):
+                missing.append("group_id/group")
+            if missing:
+                warnings.append(
+                    f"Skipped {table.sheet}!{table.range} row {row_number}: "
+                    f"missing required {', '.join(missing)}."
+                )
+                continue
+            payloads.append(payload)
+
+        return payloads, warnings
+
+    def _select_template_entity(self, table: ExtractedTable) -> str | None:
+        headers = set(table.headers)
+        if {"student_id", "lesson_id", "data"}.issubset(headers):
+            sheet_name = table.sheet.lower()
+            if "comment" in sheet_name:
+                return "comments"
+            if "mark" in sheet_name or "score" in sheet_name:
+                return "marks"
+            data_values = [
+                row.get("data")
+                for row in table.rows
+                if self._clean_import_cell(row.get("data")) is not None
+            ]
+            if any(not self._can_parse_int(value) for value in data_values):
+                return "comments"
+            return "marks"
+
+        best_score = 0.0
+        best_entity: str | None = None
+
+        for entity_type in XLSX_SHEETS_ORDER:
+            known_headers = set(XLSX_COLUMNS_BY_SHEET[entity_type])
+            required_headers = set(XLSX_REQUIRED_COLUMNS_BY_SHEET[entity_type])
+            if not headers or not headers.issubset(known_headers):
+                continue
+            if not required_headers.issubset(headers):
+                continue
+
+            score = len(headers) / max(len(known_headers), 1)
+            if table.sheet.lower() == entity_type.lower():
+                score += 1
+            if score > best_score:
+                best_score = score
+                best_entity = entity_type
+
+        return best_entity
+
+    @staticmethod
+    def _can_parse_int(value: object) -> bool:
+        try:
+            int(value)
+        except (TypeError, ValueError):
+            return False
+        return True
+
+    def _template_payloads_from_table(
+        self,
+        entity_type: str,
+        table: ExtractedTable,
+    ) -> tuple[list[dict[str, object]], list[str]]:
+        model = self._model_by_sheet[entity_type]
+        schema = self._schema_for_import_entity(entity_type)
+        required_fields = XLSX_REQUIRED_COLUMNS_BY_SHEET[entity_type]
+        payloads: list[dict[str, object]] = []
+        warnings: list[str] = []
+
+        for row_number, row in enumerate(table.rows, start=2):
+            try:
+                normalized = self._normalize_import_row(model, row)
+            except (ValueError, TypeError) as exc:
+                warnings.append(
+                    f"Skipped {table.sheet}!{table.range} row {row_number}: {exc}"
+                )
+                continue
+
+            missing = [
+                field_name
+                for field_name in required_fields
+                if normalized.get(field_name) in (None, "")
+            ]
+            if missing:
+                warnings.append(
+                    f"Skipped {table.sheet}!{table.range} row {row_number}: "
+                    f"missing required {', '.join(missing)}."
+                )
+                continue
+
+            try:
+                schema.model_validate(normalized)
+            except ValidationError as exc:
+                warnings.append(
+                    f"Skipped {table.sheet}!{table.range} row {row_number}: "
+                    + "; ".join(error["msg"] for error in exc.errors())
+                )
+                continue
+            payloads.append(normalized)
+
+        return payloads, warnings
+
+    @staticmethod
+    def _schema_for_import_entity(entity_type: str):
+        schema = CREATE_SCHEMA_BY_ENTITY.get(entity_type)
+        if schema is not None:
+            return schema
+        return STRICT_CREATE_SCHEMA_BY_ENTITY[entity_type]
+
+    @staticmethod
+    def _clean_import_cell(value: object) -> object | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return None
+        return value
+
     def import_from_preview(self, preview: ImportPreview) -> dict[str, int]:
         if preview.errors:
             raise RepositoryError(preview.errors[0])
@@ -977,16 +1308,18 @@ class DiaryRepository:
                 if model is None:
                     continue
                 for row in rows:
-                    normalized = self._normalize_import_row(model, row)
+                    normalized = self._prepare_import_row(sheet_name, model, row)
                     if not normalized:
                         continue
-                    if not replace_existing and self._import_row_exists(
-                        sheet_name,
-                        normalized,
-                    ):
-                        continue
-                    self.session.add(model(**normalized))
+                    existing = None
+                    if not replace_existing:
+                        existing = self._find_import_target(sheet_name, normalized)
+                    if existing is None:
+                        self.session.add(model(**normalized))
+                    else:
+                        self._update_import_target(existing, normalized)
                     imported_counts[sheet_name] += 1
+                self.session.flush()
 
             self.session.commit()
         except IntegrityError as exc:
@@ -1109,6 +1442,112 @@ class DiaryRepository:
                 return value
             return datetime.fromisoformat(str(value).strip())
         return value
+
+    def _prepare_import_row(
+        self,
+        sheet_name: str,
+        model: type[Base],
+        row: dict[str, object],
+    ) -> dict[str, object]:
+        group_name = None
+        if sheet_name == "students":
+            group_name = row.get("group_name")
+
+        normalized = self._normalize_import_row(model, row)
+        if sheet_name == "students" and normalized.get("group_id") is None:
+            if group_name is None:
+                raise ValueError("Student row does not contain group_id or group name.")
+            group = self._get_or_create_group_by_name(str(group_name))
+            normalized["group_id"] = group.id
+        return normalized
+
+    def _get_or_create_group_by_name(self, name: str) -> Group:
+        clean_name = name.strip()
+        self._validate_group_values(clean_name, None)
+        group = self.session.scalar(select(Group).where(Group.name == clean_name))
+        if group is None:
+            group = Group(name=clean_name, speciality=None)
+            self.session.add(group)
+            self.session.flush()
+        return group
+
+    def _find_import_target(
+        self,
+        sheet_name: str,
+        row: dict[str, object],
+    ) -> Base | None:
+        model = self._model_by_sheet[sheet_name]
+        row_id = row.get("id")
+        if row_id is not None:
+            target = self.session.get(model, row_id)
+            if target is not None:
+                return target
+
+        if sheet_name == "groups":
+            return self.session.scalar(
+                select(Group).where(Group.name == row.get("name"))
+            )
+        if sheet_name == "students":
+            return self.session.scalar(
+                select(Student).where(
+                    Student.group_id == row.get("group_id"),
+                    Student.first_name == row.get("first_name"),
+                    Student.surname == row.get("surname"),
+                )
+            )
+        if sheet_name == "schedules":
+            return self.session.scalar(
+                select(Schedule).where(
+                    Schedule.day == row.get("day"),
+                    Schedule.time == row.get("time"),
+                    Schedule.odd_or_even == row.get("odd_or_even"),
+                    Schedule.type == row.get("type"),
+                )
+            )
+        if sheet_name == "schedule_group_links":
+            return self.session.scalar(
+                select(ScheduleGroupLink).where(
+                    ScheduleGroupLink.group_id == row.get("group_id"),
+                    ScheduleGroupLink.schedule_id == row.get("schedule_id"),
+                )
+            )
+        if sheet_name == "lessons":
+            return self.session.scalar(
+                select(Lesson).where(
+                    Lesson.schedule_id == row.get("schedule_id"),
+                    Lesson.date == row.get("date"),
+                )
+            )
+        if sheet_name == "attendances":
+            return self.session.scalar(
+                select(Attendance).where(
+                    Attendance.student_id == row.get("student_id"),
+                    Attendance.lesson_id == row.get("lesson_id"),
+                )
+            )
+        if sheet_name == "marks":
+            return self.session.scalar(
+                select(Mark).where(
+                    Mark.student_id == row.get("student_id"),
+                    Mark.lesson_id == row.get("lesson_id"),
+                )
+            )
+        if sheet_name == "comments":
+            return self.session.scalar(
+                select(Comment).where(
+                    Comment.student_id == row.get("student_id"),
+                    Comment.lesson_id == row.get("lesson_id"),
+                )
+            )
+        return None
+
+    @staticmethod
+    def _update_import_target(target: Base, row: dict[str, object]) -> None:
+        for field_name, value in row.items():
+            if field_name == "id":
+                continue
+            if hasattr(target, field_name):
+                setattr(target, field_name, value)
 
     def _import_row_exists(self, sheet_name: str, row: dict[str, object]) -> bool:
         model = self._model_by_sheet[sheet_name]

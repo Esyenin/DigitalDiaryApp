@@ -91,6 +91,19 @@ class StandardWorkbookReader:
             message = f"Неизвестные листы в XLSX-файле: {joined}."
             logger.error("StandardWorkbookReader found unknown sheets: %s.", joined)
             result.add_error(message)
+            return
+
+        expected_order = [
+            sheet_name
+            for sheet_name in XLSX_SHEETS_ORDER
+            if sheet_name in sheet_names
+        ]
+        if sheet_names != expected_order:
+            result.add_error(
+                "Листы стандартного XLSX должны идти в порядке экспорта: "
+                + ", ".join(expected_order)
+                + "."
+            )
 
     @staticmethod
     def _ordered_sheet_names(sheet_names: list[str]) -> list[str]:
@@ -135,11 +148,7 @@ class StandardWorkbookReader:
             )
             return []
 
-        headers = tuple(
-            str(header).strip()
-            for header in rows[0]
-            if header is not None and str(header).strip()
-        )
+        headers = self._normalize_header_row(rows[0])
         error_count_before = len(result.errors)
         self._validate_headers(sheet_name, headers, result)
         if len(result.errors) > error_count_before:
@@ -173,6 +182,16 @@ class StandardWorkbookReader:
         """
         return all(value is None for value in row_data.values())
 
+    @staticmethod
+    def _normalize_header_row(raw_headers: tuple[object, ...]) -> tuple[str, ...]:
+        headers = tuple(
+            "" if header is None else str(header).strip()
+            for header in raw_headers
+        )
+        while headers and not headers[-1]:
+            headers = headers[:-1]
+        return headers
+
     def _validate_headers(
         self,
         sheet_name: str,
@@ -204,3 +223,13 @@ class StandardWorkbookReader:
                 joined,
             )
             result.add_error(message, sheet_name=sheet_name)
+            return
+
+        expected_headers = tuple(XLSX_COLUMNS_BY_SHEET.get(sheet_name, ()))
+        if headers != expected_headers:
+            result.add_error(
+                f"Лист {sheet_name} не соответствует стандартному формату экспорта. "
+                f"Ожидались колонки: {', '.join(expected_headers)}. "
+                f"Найдены колонки: {', '.join(headers) or '<empty>'}.",
+                sheet_name=sheet_name,
+            )
