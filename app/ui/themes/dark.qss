@@ -1,0 +1,428 @@
+QWidget {
+    background-color: #15171c;
+    color: #eef2f5;
+    font-family: "Segoe UI";
+    font-size: 16px;
+}
+
+QMainWindow,
+QWidget#sourceWidget {
+    background-color: #111317;
+}
+
+QStackedWidget#mainWidget,
+QWidget#pageSchedule,
+QWidget#pageGroups,
+QWidget#pageSettings,
+QWidget#DetailPage {
+    background-color: #171b22;
+}
+
+QStackedWidget#settingsWidget,
+QWidget#pageSettingsSchedule,
+QWidget#pageSettingsGroups,
+QWidget#pageSettingsStudents,
+QWidget#pageSettingsSemester,
+QWidget#ContentScrollBody,
+QWidget#LessonDateScrollBody,
+QWidget#ScheduleDayColumn {
+    background: transparent;
+}
+
+QLabel {
+    color: #eef2f5;
+    background: transparent;
+    font-size: 18px;
+    font-weight: 400;
+}
+
+QPushButton {
+    background-color: #252b34;
+    color: #eef2f5;
+    border: 1px solid #384252;
+    border-radius: 8px;
+    padding: 10px 18px;
+    min-height: 42px;
+    font-size: 17px;
+}
+
+QPushButton:hover {
+    background-color: #303846;
+    border-color: #526071;
+}
+
+QPushButton#mainButtonSchedule,
+QPushButton#mainButtonGroups,
+QPushButton#mainButtonSettings {
+    background-color: #242a32;
+    color: #dfe6ed;
+    min-height: 96px;
+    font-size: 26px;
+    border-radius: 8px;
+}
+
+QPushButton#mainButtonSchedule[active="true"],
+QPushButton#mainButtonGroups[active="true"],
+QPushButton#mainButtonSettings[active="true"] {
+    background-color: #f4b860;
+    color: #15110b;
+    border-color: #f4b860;
+}
+
+QPushButton#scheduleDateButtonLeft,
+QPushButton#scheduleDateButtonRight,
+QPushButton#scheduleDateButtonToday,
+QPushButton#BackButton,
+QPushButton#CardEditButton,
+QPushButton#SettingsToolButton {
+    background-color: #20262e;
+    color: #f2f5f8;
+    border: 1px solid #3a4554;
+    min-height: 38px;
+    font-size: 16px;
+}
+
+QPushButton#CardDeleteButton {
+    background-color: #2a2026;
+    color: #ff8da1;
+    border: 1px solid #70404b;
+    min-width: 76px;
+    font-size: 14px;
+}
+
+QPushButton#scheduleDateButtonLeft:disabled,
+QPushButton#scheduleDateButtonRight:disabled {
+    color: #697381;
+    background-color: #1b2027;
+}
+
+QLabel#scheduleDateLabelsDateLabelWeek {
+    color: #b7c2ce;
+    font-size: 16px;
+}
+
+QLabel#scheduleDateLabelsDateLabelDate {
+    color: #ffffff;
+    font-size: 24px;
+}
+
+QLabel#scheduleDateLabelsOddityLabel,
+QLabel#DarkBadge,
+QLabel#DarkBadgeLarge {
+    background-color: #f4b860;
+    color: #15110b;
+    border-radius: 8px;
+    padding: 5px 10px;
+}
+
+QLabel#scheduleDateLabelsOddityLabel {
+    border-radius: 9px;
+    padding: 18px 30px;
+    font-size: 22px;
+}
+
+QLabel#DarkBadge {
+    font-size: 14px;
+}
+
+QLabel#DarkBadgeLarge {
+    font-size: 16px;
+    min-width: 96px;
+    min-height: 34px;
+}
+
+QLabel#ScheduleDayHeader,
+QLabel#ScheduleDayHeaderActive {
+    background-color: #20262e;
+    color: #d8e0e8;
+    border: 1px solid #35404e;
+    border-radius: 10px;
+    padding: 14px;
+    min-height: 82px;
+    font-size: 18px;
+}
+
+QLabel#ScheduleDayHeaderActive {
+    background-color: #2f9e8f;
+    color: #ffffff;
+    border-color: #2f9e8f;
+    font-weight: 700;
+}
+
+QLabel#NoLessonsCard {
+    background-color: #20262e;
+    color: #8793a1;
+    border: 1px solid #35404e;
+    border-radius: 10px;
+    padding: 18px;
+    min-height: 64px;
+}
+
+QFrame#LessonCard,
+QFrame#SettingsCard,
+QFrame#DetailHeader,
+QFrame#DetailTable {
+    background-color: #20262e;
+    border: 1px solid #35404e;
+    border-radius: 10px;
+}
+
+QFrame#GroupCard,
+QFrame#GroupCardCompact {
+    background-color: #211f1a;
+    border: 1px solid #5c4a2f;
+    border-radius: 10px;
+}
+
+QFrame#GroupCardCompact {
+    background-color: #1f2227;
+}
+
+QFrame#LessonCard:hover,
+QFrame#GroupCard:hover,
+QFrame#GroupCardCompact:hover {
+    border-color: #f4b860;
+}
+
+QLabel#LessonCardTime {
+    color: #ffffff;
+    font-size: 24px;
+    font-weight: 700;
+}
+
+QLabel#LessonCardGroups,
+QLabel#LinkLabel {
+    color: #73d2c4;
+    font-size: 17px;
+}
+
+QLabel#LessonCardTopic {
+    color: #e7edf3;
+    font-size: 18px;
+}
+
+QLabel#LessonCardType,
+QLabel#SmallPill {
+    background-color: #171b22;
+    color: #dfe6ed;
+    border: 1px solid #35404e;
+    border-radius: 8px;
+    padding: 4px 10px;
+    font-size: 14px;
+}
+
+QLabel#groupsTip1,
+QLabel#settingsCurrentLabelTip1,
+QLabel#settingsScheduleChangeLabelTip1,
+QLabel#settingsGroupsChangeLabelTip1,
+QLabel#settingsStudentsChangeLabelTip1,
+QLabel#settingsSemesterTip1Label {
+    color: #ffffff;
+    font-size: 30px;
+}
+
+QLabel#groupsTip2,
+QLabel#settingsCurrentLabelTip2,
+QLabel#settingsSemesterActionDateLabelTip2,
+QLabel#settingsSemesterActionLabelTip2,
+QLabel#settingsSemesterTip2Label,
+QLabel#SettingsCardSubtitle,
+QLabel#SettingsCardText,
+QLabel#DetailMeta {
+    color: #b8c3cf;
+    font-size: 18px;
+}
+
+QPushButton#settingsAlternativeButtonSchedule,
+QPushButton#settingsAlternativeButtonGroups,
+QPushButton#settingsAlternativeButtonStudents,
+QPushButton#settingsAlternativeButtonSemester {
+    background-color: #242a32;
+    color: #dfe6ed;
+    min-height: 46px;
+    font-size: 18px;
+    border-radius: 8px;
+}
+
+QPushButton#settingsAlternativeButtonSchedule[active="true"],
+QPushButton#settingsAlternativeButtonGroups[active="true"],
+QPushButton#settingsAlternativeButtonStudents[active="true"],
+QPushButton#settingsAlternativeButtonSemester[active="true"] {
+    background-color: #2f9e8f;
+    color: #ffffff;
+    border-color: #2f9e8f;
+}
+
+QPushButton#settingsScheduleChangeActionButton,
+QPushButton#settingsGroupsChangeActionButton,
+QPushButton#settingsStudentsChangeActionButton,
+QPushButton#settingsSemesterActionSaveButton,
+QPushButton#settingsSemesterActionWeekChangeButtonIncrease,
+QPushButton#settingsSemesterActionWeekChangeButtonDecrease,
+QPushButton#PrimarySmallButton {
+    background-color: #2f9e8f;
+    color: #ffffff;
+    border-radius: 8px;
+    min-height: 40px;
+    font-size: 16px;
+}
+
+QPushButton#settingsSemesterActionWeekChangeButtonIncrease,
+QPushButton#settingsSemesterActionWeekChangeButtonDecrease {
+    min-width: 48px;
+    max-width: 58px;
+    font-size: 24px;
+}
+
+QPushButton#LinkButton {
+    background: transparent;
+    color: #73d2c4;
+    border: none;
+    padding: 0;
+    min-height: 24px;
+    font-size: 16px;
+    text-align: left;
+}
+
+QPushButton#LinkButton:hover {
+    color: #9be3da;
+    text-decoration: underline;
+}
+
+QTextEdit,
+QLineEdit,
+QComboBox,
+QTimeEdit,
+QListWidget {
+    background-color: #171b22;
+    color: #eef2f5;
+    border: 1px solid #3a4554;
+    border-radius: 8px;
+    padding: 8px;
+    font-size: 16px;
+    min-height: 34px;
+}
+
+QLineEdit#InlineTextInput,
+QLineEdit#ScoreInput {
+    min-height: 28px;
+    padding: 5px 8px;
+    font-size: 14px;
+}
+
+QLineEdit#ScoreInput {
+    max-width: 72px;
+}
+
+QCheckBox#InlineCheckBox {
+    background: transparent;
+    color: #eef2f5;
+    font-size: 15px;
+    spacing: 8px;
+}
+
+QScrollArea#ContentScroll,
+QScrollArea#DetailScroll,
+QScrollArea#LessonDateScroll {
+    background: transparent;
+    border: none;
+}
+
+QLabel#RoundIcon,
+QLabel#RoundIconMuted {
+    background-color: #173f39;
+    color: #86eadc;
+    border-radius: 27px;
+    font-size: 20px;
+    font-weight: 700;
+}
+
+QLabel#RoundIconMuted {
+    background-color: #2a3039;
+    color: #aab5c1;
+}
+
+QLabel#GroupCardTitle,
+QLabel#SettingsCardTitle {
+    color: #ffffff;
+    font-size: 24px;
+}
+
+QLabel#GroupCardSubtitle {
+    color: #c2ccd6;
+    font-size: 16px;
+}
+
+QLabel#CardArrow {
+    color: #85909d;
+    font-size: 34px;
+}
+
+QFrame#MetricBlue,
+QFrame#MetricGreen,
+QFrame#MetricRed,
+QFrame#MetricPurple,
+QFrame#MetricWhite {
+    border-radius: 10px;
+    border: 1px solid #35404e;
+    min-height: 110px;
+}
+
+QFrame#MetricBlue { background-color: #1c2c3b; }
+QFrame#MetricGreen { background-color: #19352f; }
+QFrame#MetricRed { background-color: #382124; }
+QFrame#MetricPurple { background-color: #302a3b; }
+QFrame#MetricWhite { background-color: #20262e; }
+
+QLabel#MetricTitle {
+    color: #b8c3cf;
+    font-size: 16px;
+}
+
+QLabel#MetricValue {
+    color: #f4b860;
+    font-size: 34px;
+}
+
+QLabel#DetailTitle {
+    color: #ffffff;
+    font-size: 36px;
+}
+
+QLabel#SectionTitle {
+    color: #ffffff;
+    font-size: 26px;
+    padding-bottom: 20px;
+}
+
+QFrame#TableHeader QLabel {
+    color: #ffffff;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+QFrame#TableRow {
+    background-color: #20262e;
+    border-top: 1px solid #35404e;
+}
+
+QFrame#TableRow QLabel {
+    font-size: 16px;
+}
+
+QPushButton#LessonDateButton {
+    background-color: #171b22;
+    color: #e7edf3;
+    border: 1px solid #35404e;
+    border-radius: 8px;
+    padding: 6px 10px;
+    min-width: 116px;
+    min-height: 52px;
+    font-size: 13px;
+    text-align: left;
+}
+
+QPushButton#LessonDateButton:hover {
+    border-color: #f4b860;
+    color: #f4b860;
+}

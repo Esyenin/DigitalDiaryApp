@@ -1,11 +1,23 @@
 from __future__ import annotations
 
-from datetime import date, time, timedelta
+from dataclasses import dataclass, field
+from datetime import date, datetime, time, timedelta
+from pathlib import Path
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, event, select, text
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from app.database import DATABASE_URL
+from app.io_tools import ImportExportService
+from app.io_tools.application import ImportRequest
+from app.io_tools.engine.operation_result import TabularImportResult
+from app.io_tools.engine.processing_models import (
+    DataProcessingResult,
+    ImportProcessingResult,
+    StrictImportResult,
+)
+from app.io_tools.xlsx_config import XLSX_SHEETS_ORDER
 from app.models import (
     Attendance,
     Base,
@@ -17,20 +29,79 @@ from app.models import (
     ScheduleGroupLink,
     Student,
 )
-from app.ui.data.calendar import DAY_NAMES, SemesterSettings, day_index, week_type_for_number
+from app.ui.data.calendar import SemesterSettings, day_index, week_type_for_number
+
+
+class RepositoryError(Exception):
+    """User-facing data error raised by the UI repository."""
+
+
+@dataclass(slots=True)
+class ImportPreview:
+    source_path: Path
+    strategy: str
+    mode: str
+    data: dict[str, list[dict[str, object]]]
+    warnings: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def row_counts(self) -> dict[str, int]:
+        return {
+            sheet_name: len(rows)
+            for sheet_name, rows in self.data.items()
+            if rows
+        }
+
+    @property
+    def total_rows(self) -> int:
+        return sum(self.row_counts.values())
 
 
 class DiaryRepository:
     """Thin UI-facing repository over the existing SQLAlchemy models."""
 
+    _model_by_sheet = {
+        "groups": Group,
+        "schedules": Schedule,
+        "students": Student,
+        "schedule_group_links": ScheduleGroupLink,
+        "lessons": Lesson,
+        "attendances": Attendance,
+        "marks": Mark,
+        "comments": Comment,
+    }
+    _delete_order = (
+        Comment,
+        Mark,
+        Attendance,
+        Lesson,
+        ScheduleGroupLink,
+        Student,
+        Schedule,
+        Group,
+    )
+
     def __init__(self) -> None:
         self.engine = create_engine(DATABASE_URL)
+        if DATABASE_URL.startswith("sqlite"):
+            event.listen(self.engine, "connect", self._enable_sqlite_foreign_keys)
         Base.metadata.create_all(bind=self.engine)
         self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
         self.session: Session = self.session_factory()
+        self.import_export_service = ImportExportService()
+
+    @staticmethod
+    def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
     def close(self) -> None:
         self.session.close()
+
+    def refresh(self) -> None:
+        self.session.expire_all()
 
     def seed_demo_data(self, settings: SemesterSettings) -> None:
         groups = {
@@ -141,7 +212,7 @@ class DiaryRepository:
     def ensure_lessons_for_semester(self, settings: SemesterSettings) -> None:
         for schedule in self.list_schedules():
             self.ensure_lessons_for_schedule(schedule, self.schedule_topic(schedule), settings)
-        self.session.commit()
+        self._commit_or_raise("Lessons were not generated for the semester.")
 
     def ensure_lessons_for_schedule(
         self,
@@ -175,6 +246,7 @@ class DiaryRepository:
         self.session.commit()
 
     def list_groups(self) -> list[Group]:
+        self.refresh()
         stmt = (
             select(Group)
             .options(
@@ -193,6 +265,7 @@ class DiaryRepository:
         return list(self.session.scalars(stmt).all())
 
     def list_students(self, group_id: int | None = None) -> list[Student]:
+        self.refresh()
         stmt = (
             select(Student)
             .options(
@@ -210,6 +283,7 @@ class DiaryRepository:
         return list(self.session.scalars(stmt).all())
 
     def get_group(self, group_id: int) -> Group | None:
+        self.refresh()
         stmt = (
             select(Group)
             .where(Group.id == group_id)
@@ -228,6 +302,7 @@ class DiaryRepository:
         return self.session.scalar(stmt)
 
     def get_student(self, student_id: int) -> Student | None:
+        self.refresh()
         stmt = (
             select(Student)
             .where(Student.id == student_id)
@@ -250,11 +325,13 @@ class DiaryRepository:
         return self.session.scalar(stmt)
 
     def get_lesson(self, lesson_id: int) -> Lesson | None:
+        self.refresh()
         return self.session.scalar(
             self._lesson_options(select(Lesson).where(Lesson.id == lesson_id))
         )
 
     def list_schedules(self) -> list[Schedule]:
+        self.refresh()
         stmt = (
             select(Schedule)
             .options(
@@ -266,9 +343,11 @@ class DiaryRepository:
         return list(self.session.scalars(stmt).all())
 
     def list_lessons(self) -> list[Lesson]:
+        self.refresh()
         return list(self.session.scalars(self._lesson_options(select(Lesson))).all())
 
     def lessons_for_week(self, week_start: date, week_type: str | None) -> list[Lesson]:
+        self.refresh()
         week_end = week_start + timedelta(days=6)
         stmt = self._lesson_options(
             select(Lesson)
@@ -418,9 +497,7 @@ class DiaryRepository:
             else:
                 mark.data = mark_value
 
-        self.session.commit()
-        self.session.expire_all()
-
+        self._commit_or_raise("Lesson record was not saved.")
 
     def lesson_attendance_summary(self, lesson: Lesson) -> dict[str, int]:
         students = self.students_for_lesson(lesson)
@@ -439,70 +516,172 @@ class DiaryRepository:
 
     def group_stats(self, group: Group) -> dict[str, int | str]:
         students = list(group.students)
-        marks = [mark.data for student in students for mark in student.marks]
-        lab_marks = [
+        lessons = self._completed_lessons_for_group(group)
+        lesson_ids = {lesson.id for lesson in lessons}
+        assessment_lessons = [
+            lesson for lesson in lessons if lesson.schedule.is_assessment
+        ]
+        assessment_ids = {lesson.id for lesson in assessment_lessons}
+        lab_ids = {
+            lesson.id
+            for lesson in assessment_lessons
+            if lesson.schedule.type == "Lab Work"
+        }
+        test_ids = {
+            lesson.id
+            for lesson in assessment_lessons
+            if lesson.schedule.type == "Control Work"
+        }
+
+        attendance_slots = len(students) * len(lessons)
+        present = sum(
+            1
+            for student in students
+            for item in student.attendances
+            if item.lesson_id in lesson_ids and item.is_visited
+        )
+        attendance_rate = (
+            round(present / attendance_slots * 100) if attendance_slots else 0
+        )
+
+        overall_slots = len(students) * len(assessment_lessons)
+        lab_slots = len(students) * len(lab_ids)
+        test_slots = len(students) * len(test_ids)
+        overall_sum = sum(
             mark.data
             for student in students
             for mark in student.marks
-            if mark.lesson.schedule.type == "Lab Work"
-        ]
-        attendances = [item for student in students for item in student.attendances]
-        present = sum(1 for item in attendances if item.is_visited)
-        attendance_rate = round(present / len(attendances) * 100) if attendances else 0
-        overall = round(sum(marks) / len(marks)) if marks else 0
-        lab_average = round(sum(lab_marks) / len(lab_marks)) if lab_marks else 0
-        test_marks = [
+            if mark.lesson_id in assessment_ids
+        )
+        lab_sum = sum(
             mark.data
             for student in students
             for mark in student.marks
-            if mark.lesson.schedule.type == "Control Work"
-        ]
-        test_average = round(sum(test_marks) / len(test_marks)) if test_marks else "-"
+            if mark.lesson_id in lab_ids
+        )
+        test_sum = sum(
+            mark.data
+            for student in students
+            for mark in student.marks
+            if mark.lesson_id in test_ids
+        )
+        overall = round(overall_sum / overall_slots) if overall_slots else 0
+        lab_average = round(lab_sum / lab_slots) if lab_slots else 0
+        test_average = round(test_sum / test_slots) if test_slots else "-"
         return {
             "overall": overall,
             "lab": lab_average,
             "test": test_average,
             "attendance": attendance_rate,
             "students": len(students),
+            "status": self._performance_status(
+                overall,
+                attendance_rate,
+                overall_slots,
+                attendance_slots,
+            ),
         }
 
     def student_stats(self, student: Student) -> dict[str, int | str]:
-        marks = [mark.data for mark in student.marks]
-        lab_marks = [
-            mark.data for mark in student.marks if mark.lesson.schedule.type == "Lab Work"
+        lessons = self._completed_lessons_for_student(student)
+        lesson_ids = {lesson.id for lesson in lessons}
+        assessment_lessons = [
+            lesson for lesson in lessons if lesson.schedule.is_assessment
         ]
-        test_marks = [
-            mark.data
-            for mark in student.marks
-            if mark.lesson.schedule.type == "Control Work"
-        ]
-        present = sum(1 for attendance in student.attendances if attendance.is_visited)
-        attendance = (
-            round(present / len(student.attendances) * 100)
-            if student.attendances
-            else 0
+        assessment_ids = {lesson.id for lesson in assessment_lessons}
+        lab_ids = {
+            lesson.id
+            for lesson in assessment_lessons
+            if lesson.schedule.type == "Lab Work"
+        }
+        test_ids = {
+            lesson.id
+            for lesson in assessment_lessons
+            if lesson.schedule.type == "Control Work"
+        }
+
+        present = sum(
+            1
+            for attendance_item in student.attendances
+            if attendance_item.lesson_id in lesson_ids and attendance_item.is_visited
         )
+        attendance = round(present / len(lessons) * 100) if lessons else 0
+        overall_sum = sum(
+            mark.data for mark in student.marks if mark.lesson_id in assessment_ids
+        )
+        lab_sum = sum(mark.data for mark in student.marks if mark.lesson_id in lab_ids)
+        test_sum = sum(mark.data for mark in student.marks if mark.lesson_id in test_ids)
         return {
-            "overall": round(sum(marks) / len(marks)) if marks else "-",
-            "lab": round(sum(lab_marks) / len(lab_marks)) if lab_marks else "-",
-            "test": round(sum(test_marks) / len(test_marks)) if test_marks else "-",
+            "overall": (
+                round(overall_sum / len(assessment_lessons))
+                if assessment_lessons
+                else "-"
+            ),
+            "lab": round(lab_sum / len(lab_ids)) if lab_ids else "-",
+            "test": round(test_sum / len(test_ids)) if test_ids else "-",
             "attendance": attendance,
         }
 
+    def _completed_lessons_for_group(self, group: Group) -> list[Lesson]:
+        lesson_by_id: dict[int, Lesson] = {}
+        for link in group.schedule_links:
+            for lesson in link.schedule.lessons:
+                if lesson.date <= date.today():
+                    lesson_by_id[lesson.id] = lesson
+        return sorted(
+            lesson_by_id.values(),
+            key=lambda item: (item.date, item.schedule.time),
+        )
+
+    def _completed_lessons_for_student(self, student: Student) -> list[Lesson]:
+        if student.group is None:
+            return []
+        return self._completed_lessons_for_group(student.group)
+
+    @staticmethod
+    def _performance_status(
+        average: int | str,
+        attendance: int,
+        score_slots: int,
+        attendance_slots: int,
+    ) -> str:
+        if not score_slots and not attendance_slots:
+            return "No data"
+        numeric_average = average if isinstance(average, int) else 0
+        if score_slots:
+            score = round(numeric_average * 0.65 + attendance * 0.35)
+        else:
+            score = attendance
+        if score >= 85:
+            return "Excellent"
+        if score >= 70:
+            return "Good"
+        if score >= 50:
+            return "Watch"
+        return "At risk"
+
     def create_group(self, name: str, speciality: str | None = None) -> Group:
-        group = Group(name=name.strip(), speciality=(speciality or "").strip() or None)
+        clean_name = name.strip()
+        clean_speciality = (speciality or "").strip() or None
+        self._validate_group_values(clean_name, clean_speciality)
+        self._ensure_group_name_available(clean_name)
+        group = Group(name=clean_name, speciality=clean_speciality)
         self.session.add(group)
-        self.session.commit()
+        self._commit_or_raise("Group was not created.")
         return group
 
     def update_group(self, group: Group, name: str, speciality: str | None) -> None:
-        group.name = name.strip()
-        group.speciality = (speciality or "").strip() or None
-        self.session.commit()
+        clean_name = name.strip()
+        clean_speciality = (speciality or "").strip() or None
+        self._validate_group_values(clean_name, clean_speciality)
+        self._ensure_group_name_available(clean_name, current_group_id=group.id)
+        group.name = clean_name
+        group.speciality = clean_speciality
+        self._commit_or_raise("Group was not updated.")
 
     def delete_group(self, group: Group) -> None:
         self.session.delete(group)
-        self.session.commit()
+        self._commit_or_raise("Group was not deleted.")
 
     def create_student(
         self,
@@ -511,16 +690,21 @@ class DiaryRepository:
         surname: str,
         email: str | None = None,
     ) -> Student:
+        clean_first_name = first_name.strip()
+        clean_surname = surname.strip()
+        clean_email = (email or "").strip() or None
+        self._validate_student_values(clean_first_name, clean_surname, clean_email)
+        self._ensure_student_available(group.id, clean_first_name, clean_surname)
         student = Student(
             group_id=group.id,
-            first_name=first_name.strip(),
-            surname=surname.strip(),
+            first_name=clean_first_name,
+            surname=clean_surname,
             patronymic=None,
             personal_data=None,
-            bmstu_email=(email or "").strip() or None,
+            bmstu_email=clean_email,
         )
         self.session.add(student)
-        self.session.commit()
+        self._commit_or_raise("Student was not created.")
         return student
 
     def update_student(
@@ -531,15 +715,25 @@ class DiaryRepository:
         surname: str,
         email: str | None,
     ) -> None:
+        clean_first_name = first_name.strip()
+        clean_surname = surname.strip()
+        clean_email = (email or "").strip() or None
+        self._validate_student_values(clean_first_name, clean_surname, clean_email)
+        self._ensure_student_available(
+            group.id,
+            clean_first_name,
+            clean_surname,
+            current_student_id=student.id,
+        )
         student.group_id = group.id
-        student.first_name = first_name.strip()
-        student.surname = surname.strip()
-        student.bmstu_email = (email or "").strip() or None
-        self.session.commit()
+        student.first_name = clean_first_name
+        student.surname = clean_surname
+        student.bmstu_email = clean_email
+        self._commit_or_raise("Student was not updated.")
 
     def delete_student(self, student: Student) -> None:
         self.session.delete(student)
-        self.session.commit()
+        self._commit_or_raise("Student was not deleted.")
 
     def create_schedule(
         self,
@@ -552,6 +746,13 @@ class DiaryRepository:
         is_assessment: bool,
         settings: SemesterSettings,
     ) -> Schedule:
+        self._ensure_schedule_available(
+            groups,
+            day,
+            lesson_time,
+            week_type,
+            lesson_type,
+        )
         schedule = Schedule(
             odd_or_even=week_type,
             type=lesson_type,
@@ -564,7 +765,7 @@ class DiaryRepository:
         for group in groups:
             self.session.add(ScheduleGroupLink(group_id=group.id, schedule_id=schedule.id))
         self.ensure_lessons_for_schedule(schedule, topic, settings)
-        self.session.commit()
+        self._commit_or_raise("Schedule template was not created.")
         return schedule
 
     def update_schedule(
@@ -579,6 +780,14 @@ class DiaryRepository:
         is_assessment: bool,
         settings: SemesterSettings,
     ) -> None:
+        self._ensure_schedule_available(
+            groups,
+            day,
+            lesson_time,
+            week_type,
+            lesson_type,
+            current_schedule_id=schedule.id,
+        )
         schedule.day = day
         schedule.time = lesson_time
         schedule.odd_or_even = week_type
@@ -593,11 +802,376 @@ class DiaryRepository:
             self.session.delete(lesson)
         self.session.flush()
         self.ensure_lessons_for_schedule(schedule, topic, settings)
-        self.session.commit()
+        self._commit_or_raise("Schedule template was not updated.")
 
     def delete_schedule(self, schedule: Schedule) -> None:
         self.session.delete(schedule)
-        self.session.commit()
+        self._commit_or_raise("Schedule template was not deleted.")
+
+    def _commit_or_raise(self, fallback_message: str) -> None:
+        try:
+            self.session.commit()
+        except IntegrityError as exc:
+            self.session.rollback()
+            raise RepositoryError(self._integrity_message(exc)) from exc
+        except SQLAlchemyError as exc:
+            self.session.rollback()
+            raise RepositoryError(fallback_message) from exc
+        self.session.expire_all()
+
+    @staticmethod
+    def _integrity_message(exc: IntegrityError) -> str:
+        message = str(exc.orig)
+        if "groups.name" in message or "UNIQUE constraint failed: groups.name" in message:
+            return "A group with this name already exists."
+        if "uq_lesson_schedule_date" in message or "lessons.schedule_id, lessons.date" in message:
+            return "A lesson for this schedule and date already exists."
+        if "uq_schedule_group_link" in message:
+            return "This group is already attached to this schedule template."
+        if "uq_attendance_student_lesson" in message:
+            return "Attendance for this student and lesson already exists."
+        if "uq_mark_student_lesson" in message:
+            return "Score for this student and lesson already exists."
+        if "uq_comment_student_lesson" in message:
+            return "Comment for this student and lesson already exists."
+        return "The database rejected this change because it duplicates existing data."
+
+    @staticmethod
+    def _validate_group_values(name: str, speciality: str | None) -> None:
+        if not name:
+            raise RepositoryError("Group name is required.")
+        if len(name) > 16:
+            raise RepositoryError("Group name must be 16 characters or shorter.")
+        if speciality is not None and len(speciality) > 128:
+            raise RepositoryError("Speciality must be 128 characters or shorter.")
+
+    @staticmethod
+    def _validate_student_values(
+        first_name: str,
+        surname: str,
+        email: str | None,
+    ) -> None:
+        if not first_name or not surname:
+            raise RepositoryError("First name and surname are required.")
+        if len(first_name) > 128 or len(surname) > 128:
+            raise RepositoryError("Student name fields must be 128 characters or shorter.")
+        if email is not None and len(email) > 128:
+            raise RepositoryError("Email must be 128 characters or shorter.")
+
+    def _ensure_group_name_available(
+        self,
+        name: str,
+        *,
+        current_group_id: int | None = None,
+    ) -> None:
+        existing = self.session.scalar(select(Group).where(Group.name == name))
+        if existing is not None and existing.id != current_group_id:
+            raise RepositoryError("A group with this name already exists.")
+
+    def _ensure_student_available(
+        self,
+        group_id: int,
+        first_name: str,
+        surname: str,
+        *,
+        current_student_id: int | None = None,
+    ) -> None:
+        existing = self.session.scalar(
+            select(Student).where(
+                Student.group_id == group_id,
+                Student.first_name == first_name,
+                Student.surname == surname,
+            )
+        )
+        if existing is not None and existing.id != current_student_id:
+            raise RepositoryError(
+                "This student already exists in the selected group."
+            )
+
+    def _ensure_schedule_available(
+        self,
+        groups: list[Group],
+        day: str,
+        lesson_time: time,
+        week_type: str,
+        lesson_type: str,
+        *,
+        current_schedule_id: int | None = None,
+    ) -> None:
+        selected_group_ids = {group.id for group in groups}
+        schedules = self.session.scalars(
+            select(Schedule)
+            .where(
+                Schedule.day == day,
+                Schedule.time == lesson_time,
+                Schedule.odd_or_even == week_type,
+                Schedule.type == lesson_type,
+            )
+            .options(selectinload(Schedule.group_links))
+        ).all()
+        for schedule in schedules:
+            if schedule.id == current_schedule_id:
+                continue
+            group_ids = {link.group_id for link in schedule.group_links}
+            if group_ids == selected_group_ids:
+                raise RepositoryError(
+                    "An identical schedule template already exists."
+                )
+
+    def export_to_xlsx(self, file_path: str | Path) -> Path:
+        self.refresh()
+        payload = {
+            sheet_name: self.session.scalars(
+                select(model).order_by(model.id)
+            ).all()
+            for sheet_name, model in self._model_by_sheet.items()
+        }
+        return self.import_export_service.export_to_xlsx(payload, file_path)
+
+    def preview_import_from_xlsx(
+        self,
+        file_path: str | Path,
+        *,
+        strategy: str,
+        mode: str,
+        sheet_name: str | None = None,
+        cell_range: str | None = None,
+        entity_type: str | None = None,
+    ) -> ImportPreview:
+        source_path = Path(file_path)
+        request = ImportRequest(
+            source_path=source_path,
+            format_name="xlsx",
+            strategy_name=strategy,
+            destination_name="return",
+            sheet_name=sheet_name or None,
+            cell_range=cell_range or None,
+            entity_type=entity_type or None,
+        )
+        result = self.import_export_service.import_data(request)
+        data, warnings, errors = self._payload_from_import_result(result)
+        return ImportPreview(
+            source_path=source_path,
+            strategy=strategy,
+            mode=mode,
+            data=data,
+            warnings=warnings,
+            errors=errors,
+        )
+
+    def import_from_preview(self, preview: ImportPreview) -> dict[str, int]:
+        if preview.errors:
+            raise RepositoryError(preview.errors[0])
+        if preview.total_rows == 0:
+            raise RepositoryError("The selected import does not contain rows.")
+
+        replace_existing = preview.mode == "replace"
+        imported_counts = {sheet_name: 0 for sheet_name in preview.data}
+        try:
+            if replace_existing:
+                self._clear_database_in_session()
+
+            for sheet_name in XLSX_SHEETS_ORDER:
+                rows = preview.data.get(sheet_name, [])
+                model = self._model_by_sheet.get(sheet_name)
+                if model is None:
+                    continue
+                for row in rows:
+                    normalized = self._normalize_import_row(model, row)
+                    if not normalized:
+                        continue
+                    if not replace_existing and self._import_row_exists(
+                        sheet_name,
+                        normalized,
+                    ):
+                        continue
+                    self.session.add(model(**normalized))
+                    imported_counts[sheet_name] += 1
+
+            self.session.commit()
+        except IntegrityError as exc:
+            self.session.rollback()
+            raise RepositoryError(self._integrity_message(exc)) from exc
+        except (SQLAlchemyError, ValueError, TypeError) as exc:
+            self.session.rollback()
+            raise RepositoryError(f"Import failed: {exc}") from exc
+
+        self.session.expire_all()
+        return {name: count for name, count in imported_counts.items() if count}
+
+    def clear_database(self) -> None:
+        try:
+            self._clear_database_in_session()
+            self.session.commit()
+        except SQLAlchemyError as exc:
+            self.session.rollback()
+            raise RepositoryError("Database was not cleared.") from exc
+        self.session.expire_all()
+
+    def _clear_database_in_session(self) -> None:
+        for model in self._delete_order:
+            self.session.execute(delete(model))
+        if DATABASE_URL.startswith("sqlite"):
+            sequence_exists = self.session.scalar(
+                text(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name='sqlite_sequence'"
+                )
+            )
+            if sequence_exists:
+                table_names = ", ".join(
+                    f"'{model.__tablename__}'" for model in self._delete_order
+                )
+                self.session.execute(
+                    text(f"DELETE FROM sqlite_sequence WHERE name IN ({table_names})")
+                )
+
+    @staticmethod
+    def _payload_from_import_result(
+        result: object,
+    ) -> tuple[dict[str, list[dict[str, object]]], list[str], list[str]]:
+        if isinstance(result, TabularImportResult):
+            return result.data, result.warnings, result.errors
+        if isinstance(result, (ImportProcessingResult, StrictImportResult)):
+            return (
+                {result.entity_type: list(result.create_payloads)},
+                list(result.warnings),
+                list(result.errors),
+            )
+        if isinstance(result, DataProcessingResult):
+            return (
+                {result.entity_type: list(result.create_payloads)},
+                list(result.warnings),
+                list(result.errors),
+            )
+        raise RepositoryError("Unsupported import result.")
+
+    @classmethod
+    def _normalize_import_row(
+        cls,
+        model: type[Base],
+        row: dict[str, object],
+    ) -> dict[str, object]:
+        normalized: dict[str, object] = {}
+        for column in model.__table__.columns:
+            if column.name not in row:
+                continue
+            value = row[column.name]
+            if value == "":
+                value = None
+            if value is None and column.name in {"id", "created_at", "updated_at"}:
+                continue
+            normalized[column.name] = cls._normalize_import_value(
+                model,
+                column.name,
+                value,
+            )
+        return normalized
+
+    @staticmethod
+    def _normalize_import_value(
+        model: type[Base],
+        column_name: str,
+        value: object,
+    ) -> object:
+        if value is None:
+            return None
+        if column_name in {"id", "group_id", "schedule_id", "student_id", "lesson_id"}:
+            return int(value)
+        if model is Mark and column_name == "data":
+            return int(value)
+        if column_name in {"is_assessment", "is_visited"}:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return bool(value)
+            return str(value).strip().lower() in {"1", "true", "yes", "y", "да"}
+        if column_name == "date":
+            if isinstance(value, datetime):
+                return value.date()
+            if isinstance(value, date):
+                return value
+            return date.fromisoformat(str(value).strip())
+        if column_name == "time":
+            if isinstance(value, datetime):
+                return value.time().replace(microsecond=0)
+            if isinstance(value, time):
+                return value.replace(microsecond=0)
+            text_value = str(value).strip()
+            for fmt in ("%H:%M:%S", "%H:%M"):
+                try:
+                    return datetime.strptime(text_value, fmt).time()
+                except ValueError:
+                    continue
+            raise ValueError(f"Invalid time value: {value!r}")
+        if column_name in {"created_at", "updated_at"}:
+            if isinstance(value, datetime):
+                return value
+            return datetime.fromisoformat(str(value).strip())
+        return value
+
+    def _import_row_exists(self, sheet_name: str, row: dict[str, object]) -> bool:
+        model = self._model_by_sheet[sheet_name]
+        row_id = row.get("id")
+        if row_id is not None and self.session.get(model, row_id) is not None:
+            return True
+        if sheet_name == "groups":
+            return self.session.scalar(
+                select(Group.id).where(Group.name == row.get("name"))
+            ) is not None
+        if sheet_name == "students":
+            return self.session.scalar(
+                select(Student.id).where(
+                    Student.group_id == row.get("group_id"),
+                    Student.first_name == row.get("first_name"),
+                    Student.surname == row.get("surname"),
+                )
+            ) is not None
+        if sheet_name == "schedules":
+            return self.session.scalar(
+                select(Schedule.id).where(
+                    Schedule.day == row.get("day"),
+                    Schedule.time == row.get("time"),
+                    Schedule.odd_or_even == row.get("odd_or_even"),
+                    Schedule.type == row.get("type"),
+                )
+            ) is not None
+        if sheet_name == "schedule_group_links":
+            return self.session.scalar(
+                select(ScheduleGroupLink.id).where(
+                    ScheduleGroupLink.group_id == row.get("group_id"),
+                    ScheduleGroupLink.schedule_id == row.get("schedule_id"),
+                )
+            ) is not None
+        if sheet_name == "lessons":
+            return self.session.scalar(
+                select(Lesson.id).where(
+                    Lesson.schedule_id == row.get("schedule_id"),
+                    Lesson.date == row.get("date"),
+                )
+            ) is not None
+        if sheet_name == "attendances":
+            return self.session.scalar(
+                select(Attendance.id).where(
+                    Attendance.student_id == row.get("student_id"),
+                    Attendance.lesson_id == row.get("lesson_id"),
+                )
+            ) is not None
+        if sheet_name == "marks":
+            return self.session.scalar(
+                select(Mark.id).where(
+                    Mark.student_id == row.get("student_id"),
+                    Mark.lesson_id == row.get("lesson_id"),
+                )
+            ) is not None
+        if sheet_name == "comments":
+            return self.session.scalar(
+                select(Comment.id).where(
+                    Comment.student_id == row.get("student_id"),
+                    Comment.lesson_id == row.get("lesson_id"),
+                )
+            ) is not None
+        return False
 
     def _get_or_create_group(self, name: str, speciality: str) -> Group:
         group = self.session.scalar(select(Group).where(Group.name == name))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, time, timedelta
 from html import escape
+from pathlib import Path
 import sys
 
 from PySide6.QtCore import QSettings, Qt, QTime
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -51,7 +53,7 @@ from app.ui.data.calendar import (
     week_type_for_number,
     week_type_label,
 )
-from app.ui.data.repository import DiaryRepository
+from app.ui.data.repository import DiaryRepository, ImportPreview, RepositoryError
 from app.ui.generated.MainWindowUI import Ui_MainWindow
 from app.ui.widgets.card_helpers import make_link_button, make_metric, make_table_row
 from app.ui.widgets.group_card import GroupCard
@@ -85,17 +87,21 @@ class MainWindow(QMainWindow):
         )
         self.student_filter_group_id: int | None = None
         self.detail_page: QWidget | None = None
+        self.navigation_history: list[tuple[str, object | None]] = []
+        self.current_route: tuple[str, object | None] = ("main", "schedule")
+        self.current_theme = str(self.settings_store.value("ui/theme", "light"))
+        if self.current_theme not in {"light", "dark"}:
+            self.current_theme = "light"
         self._groups_grid_columns: int | None = None
         self._settings_groups_grid_columns: int | None = None
         self._ui_ready = False
-
-        self.repository.seed_demo_data(self.semester_settings)
 
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
         self.ui.sourceWidget.setVisible(True)
         self.ui.mainWidget.setCurrentWidget(self.ui.pageSchedule)
 
+        self._configure_settings_tools()
         self._apply_styles()
         self._apply_layout_visuals()
         self._configure_inputs()
@@ -151,6 +157,24 @@ class MainWindow(QMainWindow):
             str(self.semester_settings.total_weeks),
         )
         self.settings_store.sync()
+
+    def _configure_settings_tools(self) -> None:
+        self.settingsExportButton = QPushButton("Export database")
+        self.settingsExportButton.setObjectName("SettingsToolButton")
+        self.settingsImportButton = QPushButton("Import database")
+        self.settingsImportButton.setObjectName("SettingsToolButton")
+        self.settingsThemeButton = QPushButton()
+        self.settingsThemeButton.setObjectName("SettingsToolButton")
+        self._update_theme_button_text()
+
+        toolbar = QHBoxLayout()
+        toolbar.setObjectName("settingsTopTools")
+        toolbar.setSpacing(12)
+        toolbar.addWidget(self.settingsImportButton)
+        toolbar.addWidget(self.settingsExportButton)
+        toolbar.addWidget(self.settingsThemeButton)
+        toolbar.addStretch()
+        self.ui.mainSettings.insertLayout(1, toolbar)
 
     def _configure_inputs(self) -> None:
         for text_box in (
@@ -212,19 +236,46 @@ class MainWindow(QMainWindow):
         self.ui.settingsStudentsChangeChooseButton.clicked.connect(
             self.show_student_filter_menu
         )
+        self.settingsImportButton.clicked.connect(self.show_import_dialog)
+        self.settingsExportButton.clicked.connect(self.export_database)
+        self.settingsThemeButton.clicked.connect(self.toggle_theme)
 
     def _show_main_page(self, page: QWidget) -> None:
+        self.repository.refresh()
+        self.refresh_all()
         self.ui.mainWidget.setCurrentWidget(page)
+        if page == self.ui.pageSchedule:
+            self.current_route = ("main", "schedule")
+        elif page == self.ui.pageGroups:
+            self.current_route = ("main", "groups")
+        elif page == self.ui.pageSettings:
+            current_settings = self.ui.settingsWidget.currentWidget()
+            self.current_route = ("settings", self._settings_route_name(current_settings))
         self._sync_nav_state()
 
     def _show_settings_home(self) -> None:
+        self.repository.refresh()
+        self.refresh_all()
         self.ui.mainWidget.setCurrentWidget(self.ui.pageSettings)
         self.ui.settingsWidget.setCurrentWidget(self.ui.pageSettingsSchedule)
+        self.current_route = ("settings", "schedule")
         self._sync_nav_state()
 
     def _show_settings_page(self, page: QWidget) -> None:
+        self.repository.refresh()
+        self.refresh_all()
         self.ui.settingsWidget.setCurrentWidget(page)
+        self.current_route = ("settings", self._settings_route_name(page))
         self._sync_nav_state()
+
+    def _settings_route_name(self, page: QWidget) -> str:
+        if page == self.ui.pageSettingsGroups:
+            return "groups"
+        if page == self.ui.pageSettingsStudents:
+            return "students"
+        if page == self.ui.pageSettingsSemester:
+            return "semester"
+        return "schedule"
 
     def _sync_nav_state(self) -> None:
         active_main = {
@@ -304,7 +355,11 @@ class MainWindow(QMainWindow):
             self.selected_week_start,
             self.semester_settings,
         )
-        self.repository.ensure_lessons_for_semester(self.semester_settings)
+        try:
+            self.repository.ensure_lessons_for_semester(self.semester_settings)
+        except RepositoryError as exc:
+            QMessageBox.warning(self, "Semester settings", str(exc))
+            return
         self._populate_semester_inputs()
         self.refresh_all()
 
@@ -482,7 +537,54 @@ class MainWindow(QMainWindow):
         self.ui.settingsStudentsChangeChooseButton.setText(label)
         self.render_settings_students()
 
-    def show_lesson_detail(self, lesson: Lesson) -> None:
+    def _push_current_route(self) -> None:
+        if self.current_route is None:
+            return
+        if self.navigation_history and self.navigation_history[-1] == self.current_route:
+            return
+        self.navigation_history.append(self.current_route)
+
+    def _go_back(self) -> None:
+        if not self.navigation_history:
+            self._show_main_page(self.ui.pageSchedule)
+            return
+        route = self.navigation_history.pop()
+        self._restore_route(route)
+
+    def _restore_route(self, route: tuple[str, object | None]) -> None:
+        route_type, route_value = route
+        if route_type == "lesson" and route_value is not None:
+            lesson = self.repository.get_lesson(int(route_value))
+            if lesson is not None:
+                self.show_lesson_detail(lesson, push_history=False)
+                return
+        if route_type == "group" and route_value is not None:
+            group = self.repository.get_group(int(route_value))
+            if group is not None:
+                self.show_group_detail(group, push_history=False)
+                return
+        if route_type == "student" and route_value is not None:
+            student = self.repository.get_student(int(route_value))
+            if student is not None:
+                self.show_student_detail(student, push_history=False)
+                return
+        if route_type == "settings":
+            self._show_main_page(self.ui.pageSettings)
+            settings_page = {
+                "groups": self.ui.pageSettingsGroups,
+                "students": self.ui.pageSettingsStudents,
+                "semester": self.ui.pageSettingsSemester,
+            }.get(str(route_value), self.ui.pageSettingsSchedule)
+            self._show_settings_page(settings_page)
+            return
+        if route_value == "groups":
+            self._show_main_page(self.ui.pageGroups)
+            return
+        self._show_main_page(self.ui.pageSchedule)
+
+    def show_lesson_detail(self, lesson: Lesson, *, push_history: bool = True) -> None:
+        if push_history:
+            self._push_current_route()
         current_lesson = self.repository.get_lesson(lesson.id)
         if current_lesson is None:
             QMessageBox.warning(self, "Lesson", "Lesson was not found.")
@@ -495,9 +597,9 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(84, 32, 84, 36)
         layout.setSpacing(22)
 
-        back = QPushButton("<  Back to Schedule")
+        back = QPushButton("<  Back")
         back.setObjectName("BackButton")
-        back.clicked.connect(lambda: self._show_main_page(self.ui.pageSchedule))
+        back.clicked.connect(self._go_back)
         layout.addWidget(back, alignment=Qt.AlignmentFlag.AlignLeft)
 
         header = QFrame()
@@ -556,9 +658,12 @@ class MainWindow(QMainWindow):
             table_layout.addWidget(self._make_lesson_student_row(lesson, student))
         layout.addWidget(table)
         layout.addStretch()
+        self.current_route = ("lesson", lesson.id)
         self._show_detail_page(page)
 
-    def show_group_detail(self, group: Group) -> None:
+    def show_group_detail(self, group: Group, *, push_history: bool = True) -> None:
+        if push_history:
+            self._push_current_route()
         current_group = self.repository.get_group(group.id)
         if current_group is None:
             QMessageBox.warning(self, "Group", "Group was not found.")
@@ -571,9 +676,9 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(84, 32, 84, 36)
         layout.setSpacing(22)
 
-        back = QPushButton("<  Back to Groups")
+        back = QPushButton("<  Back")
         back.setObjectName("BackButton")
-        back.clicked.connect(lambda: self._show_main_page(self.ui.pageGroups))
+        back.clicked.connect(self._go_back)
         layout.addWidget(back, alignment=Qt.AlignmentFlag.AlignLeft)
 
         header = QFrame()
@@ -641,6 +746,7 @@ class MainWindow(QMainWindow):
                 )
             )
         layout.addWidget(lessons_box)
+        self.current_route = ("group", group.id)
         self._show_detail_page(page)
 
     def _make_group_lesson_row(
@@ -661,21 +767,9 @@ class MainWindow(QMainWindow):
             f"({schedule.odd_or_even} weeks)"
         )
         info.setObjectName("SettingsCardSubtitle")
-        dates = QLabel(
-            "Dates: "
-            + (
-                ", ".join(
-                    lesson.date.strftime("%b %d")
-                    for lesson in sorted(schedule.lessons, key=lambda item: item.date)
-                )
-                or "No generated lessons yet"
-            )
-        )
-        dates.setObjectName("SettingsCardText")
-        dates.setWordWrap(True)
         text.addWidget(title)
         text.addWidget(info)
-        text.addWidget(dates)
+        text.addWidget(self._make_lesson_date_strip(schedule))
 
         lessons = sorted(schedule.lessons, key=lambda item: item.date)
         if lessons:
@@ -702,7 +796,43 @@ class MainWindow(QMainWindow):
         layout.addWidget(badge)
         return row
 
-    def show_student_detail(self, student: Student) -> None:
+    def _make_lesson_date_strip(self, schedule: Schedule) -> QWidget:
+        lessons = sorted(schedule.lessons, key=lambda item: item.date)
+        if not lessons:
+            empty = QLabel("No generated lessons yet")
+            empty.setObjectName("SettingsCardText")
+            return empty
+
+        scroll = QScrollArea()
+        scroll.setObjectName("LessonDateScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFixedHeight(82)
+
+        body = QWidget()
+        body.setObjectName("LessonDateScrollBody")
+        layout = QHBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        topic = self.repository.schedule_topic(schedule)
+        for lesson in lessons:
+            button = QPushButton(
+                f"{lesson.date.strftime('%b %d')}\n{lesson.topic or topic}"
+            )
+            button.setObjectName("LessonDateButton")
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(
+                lambda checked=False, current=lesson: self.show_lesson_detail(current)
+            )
+            layout.addWidget(button)
+        layout.addStretch()
+        scroll.setWidget(body)
+        return scroll
+
+    def show_student_detail(self, student: Student, *, push_history: bool = True) -> None:
+        if push_history:
+            self._push_current_route()
         current_student = self.repository.get_student(student.id)
         if current_student is None:
             QMessageBox.warning(self, "Student", "Student was not found.")
@@ -715,9 +845,9 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(84, 32, 84, 36)
         layout.setSpacing(22)
 
-        back = QPushButton("<  Back to Students")
+        back = QPushButton("<  Back")
         back.setObjectName("BackButton")
-        back.clicked.connect(self._show_students_settings_page)
+        back.clicked.connect(self._go_back)
         layout.addWidget(back, alignment=Qt.AlignmentFlag.AlignLeft)
 
         header = QFrame()
@@ -764,6 +894,7 @@ class MainWindow(QMainWindow):
             records_layout.addWidget(empty)
         layout.addWidget(records)
         layout.addStretch()
+        self.current_route = ("student", student.id)
         self._show_detail_page(page)
 
     def _make_lesson_student_row(self, lesson: Lesson, student: Student) -> QFrame:
@@ -875,20 +1006,24 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(self, "Lesson", "Score must be between 0 and 100.")
                     return
 
-        self.repository.save_lesson_student_record(
-            lesson,
-            student,
-            attended=attendance_input.isChecked(),
-            comment_text=comment_input.text(),
-            mark_value=mark_value,
-        )
+        try:
+            self.repository.save_lesson_student_record(
+                lesson,
+                student,
+                attended=attendance_input.isChecked(),
+                comment_text=comment_input.text(),
+                mark_value=mark_value,
+            )
+        except RepositoryError as exc:
+            QMessageBox.warning(self, "Lesson", str(exc))
+            return
         self.render_schedule()
         self.render_groups()
         self.render_settings_groups()
         self.render_settings_students()
         refreshed_lesson = self.repository.get_lesson(lesson.id)
         if refreshed_lesson is not None:
-            self.show_lesson_detail(refreshed_lesson)
+            self.show_lesson_detail(refreshed_lesson, push_history=False)
 
     def _show_students_settings_page(self) -> None:
         self._show_main_page(self.ui.pageSettings)
@@ -1001,34 +1136,42 @@ class MainWindow(QMainWindow):
 
         lesson_time = time(time_input.time().hour(), time_input.time().minute())
         topic = topic_input.text().strip() or "Untitled lesson"
-        if schedule is None:
-            self.repository.create_schedule(
-                topic,
-                selected_groups,
-                day_input.currentText(),
-                lesson_time,
-                week_input.currentText(),
-                type_input.currentText(),
-                assessment_input.isChecked(),
-                self.semester_settings,
-            )
-        else:
-            self.repository.update_schedule(
-                schedule,
-                topic,
-                selected_groups,
-                day_input.currentText(),
-                lesson_time,
-                week_input.currentText(),
-                type_input.currentText(),
-                assessment_input.isChecked(),
-                self.semester_settings,
-            )
+        try:
+            if schedule is None:
+                self.repository.create_schedule(
+                    topic,
+                    selected_groups,
+                    day_input.currentText(),
+                    lesson_time,
+                    week_input.currentText(),
+                    type_input.currentText(),
+                    assessment_input.isChecked(),
+                    self.semester_settings,
+                )
+            else:
+                self.repository.update_schedule(
+                    schedule,
+                    topic,
+                    selected_groups,
+                    day_input.currentText(),
+                    lesson_time,
+                    week_input.currentText(),
+                    type_input.currentText(),
+                    assessment_input.isChecked(),
+                    self.semester_settings,
+                )
+        except RepositoryError as exc:
+            QMessageBox.warning(self, "Schedule Template", str(exc))
+            return
         self.refresh_all()
 
     def delete_schedule(self, schedule: Schedule) -> None:
         if self._confirm("Delete schedule template?"):
-            self.repository.delete_schedule(schedule)
+            try:
+                self.repository.delete_schedule(schedule)
+            except RepositoryError as exc:
+                QMessageBox.warning(self, "Schedule Template", str(exc))
+                return
             self.refresh_all()
 
     def show_group_dialog(self, group: Group | None = None) -> None:
@@ -1051,15 +1194,23 @@ class MainWindow(QMainWindow):
         if not name_input.text().strip():
             QMessageBox.warning(self, "Group", "Group name is required.")
             return
-        if group is None:
-            self.repository.create_group(name_input.text(), speciality_input.text())
-        else:
-            self.repository.update_group(group, name_input.text(), speciality_input.text())
+        try:
+            if group is None:
+                self.repository.create_group(name_input.text(), speciality_input.text())
+            else:
+                self.repository.update_group(group, name_input.text(), speciality_input.text())
+        except RepositoryError as exc:
+            QMessageBox.warning(self, "Group", str(exc))
+            return
         self.refresh_all()
 
     def delete_group(self, group: Group) -> None:
         if self._confirm(f"Delete group {group.name}?"):
-            self.repository.delete_group(group)
+            try:
+                self.repository.delete_group(group)
+            except RepositoryError as exc:
+                QMessageBox.warning(self, "Group", str(exc))
+                return
             self.refresh_all()
 
     def show_student_dialog(self, student: Student | None = None) -> None:
@@ -1101,27 +1252,35 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Student", "First name and surname are required.")
             return
         group = group_input.currentData()
-        if student is None:
-            self.repository.create_student(
-                group,
-                first_name_input.text(),
-                surname_input.text(),
-                email_input.text(),
-            )
-        else:
-            self.repository.update_student(
-                student,
-                group,
-                first_name_input.text(),
-                surname_input.text(),
-                email_input.text(),
-            )
-        self.repository.ensure_attendance_and_marks()
+        try:
+            if student is None:
+                self.repository.create_student(
+                    group,
+                    first_name_input.text(),
+                    surname_input.text(),
+                    email_input.text(),
+                )
+            else:
+                self.repository.update_student(
+                    student,
+                    group,
+                    first_name_input.text(),
+                    surname_input.text(),
+                    email_input.text(),
+                )
+            self.repository.ensure_attendance_and_marks()
+        except RepositoryError as exc:
+            QMessageBox.warning(self, "Student", str(exc))
+            return
         self.refresh_all()
 
     def delete_student(self, student: Student) -> None:
         if self._confirm(f"Delete student {self.repository.full_student_name(student)}?"):
-            self.repository.delete_student(student)
+            try:
+                self.repository.delete_student(student)
+            except RepositoryError as exc:
+                QMessageBox.warning(self, "Student", str(exc))
+                return
             self.refresh_all()
 
     def _confirm(self, text: str) -> bool:
@@ -1134,6 +1293,191 @@ class MainWindow(QMainWindow):
             )
             == QMessageBox.StandardButton.Yes
         )
+
+    def export_database(self) -> None:
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export database",
+            str(Path.cwd() / "digital_diary_export.xlsx"),
+            "Excel files (*.xlsx)",
+        )
+        if not file_path:
+            return
+        try:
+            exported_path = self.repository.export_to_xlsx(file_path)
+        except (RepositoryError, ValueError) as exc:
+            QMessageBox.warning(self, "Export database", str(exc))
+            return
+        QMessageBox.information(
+            self,
+            "Export database",
+            f"Database exported to:\n{exported_path}",
+        )
+
+    def show_import_dialog(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import database",
+            str(Path.cwd()),
+            "Excel files (*.xlsx)",
+        )
+        if not file_path:
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Import database")
+        form = QFormLayout(dialog)
+
+        strategy_input = QComboBox()
+        strategy_input.addItem("Standard workbook", "standard")
+        strategy_input.addItem("Smart table", "smart")
+        strategy_input.addItem("Strict table", "strict")
+
+        mode_input = QComboBox()
+        mode_input.addItem("Merge, skip existing", "merge")
+        mode_input.addItem("Replace database", "replace")
+
+        sheet_input = QLineEdit()
+        sheet_input.setPlaceholderText("Sheet name for smart/strict")
+        range_input = QLineEdit()
+        range_input.setPlaceholderText("A1:H20")
+        entity_input = QComboBox()
+        entity_input.addItems(
+            [
+                "groups",
+                "schedules",
+                "students",
+                "schedule_group_links",
+                "lessons",
+                "attendances",
+                "marks",
+                "comments",
+            ]
+        )
+
+        form.addRow("Strategy", strategy_input)
+        form.addRow("Mode", mode_input)
+        form.addRow("Sheet", sheet_input)
+        form.addRow("Range", range_input)
+        form.addRow("Entity", entity_input)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        strategy = strategy_input.currentData()
+        mode = mode_input.currentData()
+        if strategy in {"smart", "strict"}:
+            if not sheet_input.text().strip() or not range_input.text().strip():
+                QMessageBox.warning(
+                    self,
+                    "Import database",
+                    "Sheet and range are required for smart and strict import.",
+                )
+                return
+
+        try:
+            preview = self.repository.preview_import_from_xlsx(
+                file_path,
+                strategy=strategy,
+                mode=mode,
+                sheet_name=sheet_input.text().strip(),
+                cell_range=range_input.text().strip(),
+                entity_type=entity_input.currentText(),
+            )
+        except (RepositoryError, ValueError) as exc:
+            QMessageBox.warning(self, "Import database", str(exc))
+            return
+
+        if preview.errors:
+            QMessageBox.warning(
+                self,
+                "Import database",
+                "\n".join(preview.errors[:8]),
+            )
+            return
+
+        if not self._confirm_import_preview(preview):
+            return
+
+        try:
+            counts = self.repository.import_from_preview(preview)
+        except RepositoryError as exc:
+            QMessageBox.warning(self, "Import database", str(exc))
+            return
+        self.refresh_all()
+        QMessageBox.information(
+            self,
+            "Import database",
+            "Imported rows:\n" + self._format_counts(counts),
+        )
+
+    def _confirm_import_preview(self, preview: ImportPreview) -> bool:
+        text = self._format_import_preview(preview)
+        return (
+            QMessageBox.question(
+                self,
+                "Confirm import",
+                text,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            == QMessageBox.StandardButton.Yes
+        )
+
+    @staticmethod
+    def _format_counts(counts: dict[str, int]) -> str:
+        if not counts:
+            return "No new rows were imported."
+        return "\n".join(f"{name}: {count}" for name, count in counts.items())
+
+    def _format_import_preview(self, preview: ImportPreview) -> str:
+        lines = [
+            f"File: {preview.source_path}",
+            f"Strategy: {preview.strategy}",
+            (
+                "Mode: replace current database"
+                if preview.mode == "replace"
+                else "Mode: merge and skip existing rows"
+            ),
+            "",
+            "Rows to import:",
+        ]
+        if preview.row_counts:
+            lines.extend(
+                f"{sheet_name}: {count}"
+                for sheet_name, count in preview.row_counts.items()
+            )
+        else:
+            lines.append("No rows")
+        if preview.warnings:
+            lines.extend(["", "Warnings:"])
+            lines.extend(preview.warnings[:6])
+        if preview.mode == "replace":
+            lines.extend(["", "Current database will be cleared before import."])
+        lines.extend(["", "Continue?"])
+        return "\n".join(lines)
+
+    def toggle_theme(self) -> None:
+        self.current_theme = "dark" if self.current_theme == "light" else "light"
+        self.settings_store.setValue("ui/theme", self.current_theme)
+        self.settings_store.sync()
+        self._update_theme_button_text()
+        self._apply_styles()
+
+    def _update_theme_button_text(self) -> None:
+        if hasattr(self, "settingsThemeButton"):
+            next_theme = "dark" if self.current_theme == "light" else "light"
+            self.settingsThemeButton.setText(f"Switch to {next_theme} theme")
+
+    def _theme_path(self, theme_name: str) -> Path:
+        return Path(__file__).resolve().parents[1] / "themes" / f"{theme_name}.qss"
 
     def _make_table(self, title: str) -> QFrame:
         frame = QFrame()
@@ -1192,6 +1536,11 @@ class MainWindow(QMainWindow):
             layout.addWidget(widget)
 
     def _apply_styles(self) -> None:
+        theme_path = self._theme_path(self.current_theme)
+        if theme_path.exists():
+            self.setStyleSheet(theme_path.read_text(encoding="utf-8"))
+            return
+
         self.setStyleSheet(
             """
             QWidget {

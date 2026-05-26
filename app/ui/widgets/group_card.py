@@ -72,10 +72,10 @@ class GroupCard(QFrame):
             metrics.addWidget(make_metric("Attendance", f"{stats.get('attendance', 0)}%", "MetricPurple"))
             layout.addLayout(metrics)
 
-            badge = QLabel("Excellent")
+            badge = QLabel(str(stats.get("status", "No data")))
             badge.setObjectName("DarkBadge")
             badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            badge.setFixedWidth(88)
+            badge.setMinimumWidth(88)
             layout.addWidget(badge, alignment=Qt.AlignmentFlag.AlignLeft)
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt method name
