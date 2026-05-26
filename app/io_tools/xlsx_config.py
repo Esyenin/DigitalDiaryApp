@@ -20,8 +20,12 @@ SMART_IMPORT_ENTITY_TYPES = (
     "groups",
     "schedules",
     "students",
+    "schedule_group_links",
+    "lessons",
+    "attendances",
+    "marks",
+    "comments",
 )
-
 
 STRICT_IMPORT_ENTITY_TYPES = tuple(
     sheet_name

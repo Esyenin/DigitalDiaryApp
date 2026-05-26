@@ -27,7 +27,12 @@ from app.io_tools.tabular.field_aliases import (
     normalize_tabular_header,
 )
 from app.io_tools.xlsx_config import is_smart_import_entity_type
-from app.schemas import GroupFilterSchema
+from app.schemas import (
+    GroupFilterSchema,
+    LessonFilterSchema,
+    ScheduleFilterSchema,
+    StudentFilterSchema,
+)
 from app.io_tools.tabular.models import ExtractedTable
 
 
@@ -283,11 +288,14 @@ class SmartRowNormalizer:
         """
         Возвращает filter-схему для ссылочного типа.
         """
-        if reference_key == "group":
-            return GroupFilterSchema
+        schemas_by_reference_key: dict[str, type[BaseModel]] = {
+            "group": GroupFilterSchema,
+            "student": StudentFilterSchema,
+            "schedule": ScheduleFilterSchema,
+            "lesson": LessonFilterSchema,
+        }
 
-        return None
-
+        return schemas_by_reference_key.get(reference_key)
 
 class SmartReferenceResolver:
     """

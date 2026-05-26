@@ -165,11 +165,13 @@ class MainWindow(QMainWindow):
         self.ui.action.setText("Import database...")
         self.ui.action_3.setText("Export database...")
         self.ui.action_4.setText("")
-        self.ui.action_5.setText("")
-        self.ui.action_6.setText("")
+        #self.ui.action_5.setText("Multi-sheet smart import...")
+        #self.ui.action_6.setText("Human table import...")
         self._update_theme_button_text()
 
         self.ui.menu.addAction(self.ui.action)
+        #self.ui.menu.addAction(self.ui.action_6)
+        #self.ui.menu.addAction(self.ui.action_5)
         self.ui.menu.addAction(self.ui.action_3)
         self.ui.menu.addSeparator()
         self.ui.menu.addAction(self.ui.action_4)
@@ -262,8 +264,96 @@ class MainWindow(QMainWindow):
             self.show_student_filter_menu
         )
         self.ui.action.triggered.connect(self.show_import_dialog)
+        self.ui.action_6.triggered.connect(self.import_human_table_xlsx)
+        self.ui.action_5.triggered.connect(self.import_multisheet_smart_xlsx)
         self.ui.action_3.triggered.connect(self.export_database)
         self.ui.action_4.triggered.connect(self.toggle_theme)
+
+    def import_human_table_xlsx(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose XLSX file for human table import",
+            "",
+            "Excel files (*.xlsx);;All files (*.*)",
+        )
+
+        if not file_path:
+            return
+
+        try:
+            report = self.repository.import_human_table_xlsx(file_path)
+        except RepositoryError as exc:
+            QMessageBox.critical(
+                self,
+                "Human table import error",
+                str(exc),
+            )
+            return
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Human table import error",
+                f"Unexpected error:\n{exc}",
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            "Human table import",
+            f"Import finished successfully.\n\n{report}",
+        )
+
+        self.repository.refresh()
+        self.refresh_all()
+    def import_multisheet_smart_xlsx(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose XLSX file for multi-sheet smart import",
+            "",
+            "Excel files (*.xlsx);;All files (*.*)",
+        )
+
+        if not file_path:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Умный импорт всей книги",
+            "Этот импорт рассчитан на пустую базу. "
+            "Если эти данные уже импортировались раньше, появится ошибка дубликатов.\n\n"
+            "Перед запуском лучше очистить базу данных.\n\n"
+            "Продолжить импорт?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            report = self.repository.import_multisheet_smart_xlsx(file_path)
+        except RepositoryError as exc:
+            QMessageBox.critical(
+                self,
+                "Multi-sheet smart import error",
+                str(exc),
+            )
+            return
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Multi-sheet smart import error",
+                f"Unexpected error:\n{exc}",
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            "Multi-sheet smart import",
+            f"Import finished successfully.\n\n{report}",
+        )
+
+        self.repository.refresh()
+        self.refresh_all()
 
     def _show_main_page(self, page: QWidget) -> None:
         self.repository.refresh()

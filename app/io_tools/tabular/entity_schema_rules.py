@@ -42,10 +42,17 @@ CREATE_SCHEMA_BY_ENTITY: dict[str, type[BaseModel]] = {
     "groups": GroupCreateSchema,
     "schedules": ScheduleCreateSchema,
     "students": StudentCreateSchema,
+    "schedule_group_links": ScheduleGroupLinkCreateSchema,
+    "lessons": LessonCreateSchema,
+    "attendances": AttendanceCreateSchema,
+    "marks": MarkCreateSchema,
+    "comments": CommentCreateSchema,
 }
 
-
 STRICT_CREATE_SCHEMA_BY_ENTITY: dict[str, type[BaseModel]] = {
+    "groups": GroupCreateSchema,
+    "schedules": ScheduleCreateSchema,
+    "students": StudentCreateSchema,
     "schedule_group_links": ScheduleGroupLinkCreateSchema,
     "lessons": LessonCreateSchema,
     "attendances": AttendanceCreateSchema,
