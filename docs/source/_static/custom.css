@@ -1,0 +1,63 @@
+/*
+ * Дополнительные стили документации DigitalDiaryApp.
+ * Уменьшают избыточные вертикальные интервалы, сохраняя читаемость.
+ */
+
+.bd-article p {
+    line-height: 1.55;
+    margin-top: 0;
+    margin-bottom: 0.75rem;
+}
+
+.bd-article ul,
+.bd-article ol {
+    margin-top: 0.35rem;
+    margin-bottom: 0.85rem;
+}
+
+.bd-article li {
+    margin-bottom: 0.15rem;
+}
+
+.bd-article li > p {
+    margin-top: 0;
+    margin-bottom: 0.2rem;
+}
+
+.bd-article h1 {
+    margin-bottom: 1rem;
+}
+
+.bd-article h2 {
+    margin-top: 1.75rem;
+    margin-bottom: 0.75rem;
+}
+
+.bd-article h3 {
+    margin-top: 1.35rem;
+    margin-bottom: 0.6rem;
+}
+
+.bd-article table {
+    margin-top: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.bd-article .admonition {
+    margin-top: 1rem;
+    margin-bottom: 1rem;
+}
+
+.bd-article dl.py {
+    margin-top: 0.75rem;
+    margin-bottom: 1.25rem;
+}
+
+.bd-article dl.py dd {
+    margin-top: 0.5rem;
+}
+
+.bd-article dl.field-list {
+    margin-top: 0.5rem;
+    margin-bottom: 0.75rem;
+}

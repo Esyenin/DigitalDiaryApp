@@ -44,6 +44,7 @@ autodoc_default_options = {
     "members": True,
     "show-inheritance": True,
     "member-order": "bysource",
+    "exclude-members": "model_config, metadata",
 }
 
 napoleon_google_docstring = True
@@ -59,6 +60,7 @@ intersphinx_mapping = {}
 html_theme = "pydata_sphinx_theme"
 html_title = "DigitalDiaryApp"
 html_static_path = ["_static"]
+html_css_files = ["custom.css"]
 
 html_theme_options = {
     "navbar_start": ["navbar-logo"],
@@ -75,7 +77,7 @@ html_theme_options = {
 
 html_sidebars = {
      "index": [],
-     "**": ["sidebar-collapse", "sidebar-nav-bs"],
+     "**": ["sidebar-nav-bs"],
 }
 
 myst_enable_extensions = [
