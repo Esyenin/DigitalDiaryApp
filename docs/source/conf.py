@@ -52,6 +52,7 @@ napoleon_numpy_docstring = False
 napoleon_attr_annotations = True
 
 autosectionlabel_prefix_document = True
+autosectionlabel_maxdepth = 2
 
 # На первом этапе не загружаем внешние inventory-файлы.
 # Это обеспечивает сборку документации без доступа к интернету.
