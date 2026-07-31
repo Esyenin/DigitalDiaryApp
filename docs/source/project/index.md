@@ -79,12 +79,9 @@ DigitalDiaryApp — **Электронный журнал**, предназна�
 - возможность переноса данных между устройствами;
 - минимизация количества действий при проведении занятия.
 
-:::{toctree}
+:::{autotoctree}
 :hidden:
 :maxdepth: 2
-
-product
-domain
-future
-glossary
+:titlesonly:
+:order: product, domain, future, glossary
 :::

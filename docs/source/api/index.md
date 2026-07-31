@@ -19,10 +19,9 @@
 этапе будет проверено на полноту и точность.
 :::
 
-:::{toctree}
+:::{autotoctree}
+:hidden:
 :maxdepth: 2
-
-models
-schemas
-services
+:titlesonly:
+:order: models, schemas, services
 :::

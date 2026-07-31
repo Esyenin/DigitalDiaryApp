@@ -203,12 +203,9 @@ SQLAlchemy-моделями и соответствующими Pydantic-схе�
 Перспективная предметная модель описана в разделе
 [«О проекте»](../project/index.md).
 
-:::{toctree}
+:::{autotoctree}
 :hidden:
 :maxdepth: 2
-
-models
-schemas
-services
-ormservice
+:titlesonly:
+:order: models, schemas, services, ormservice
 :::

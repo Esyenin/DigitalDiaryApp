@@ -1,3 +1,7 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "_ext"))
 """Конфигурация документации DigitalDiaryApp."""
 
 from pathlib import Path
@@ -19,6 +23,7 @@ language = "ru"
 root_doc = "index"
 
 extensions = [
+    "auto_navigation",
     "myst_parser",
     "sphinx_design",
     "sphinx.ext.autodoc",
@@ -86,4 +91,17 @@ myst_enable_extensions = [
     "deflist",
     "fieldlist",
     "tasklist",
+]
+
+# Показывать фрагменты текста в результатах поиска.
+html_show_search_summary = True
+
+# -- Search result location -----------------------------------------------
+html_js_files = [
+    *globals().get("html_js_files", []),
+    "search_result_location.js",
+]
+html_css_files = [
+    *globals().get("html_css_files", []),
+    "search_result_location.css",
 ]
