@@ -1,0 +1,54 @@
+version = 1
+baseline_commit = "88a94c3"
+source_root = "app"
+
+[ignore]
+names = ["__pycache__", "__init__.py"]
+suffixes = [".pyc"]
+paths = ["app/DB_diagram.pdf"]
+
+[components.models]
+title = "Модели"
+path = "app/models"
+implementation = "READY"
+verification = "TESTED"
+documentation = "CURRENT"
+docs = ["docs/source/architecture/models.md"]
+
+[components.schemas]
+title = "Схемы"
+path = "app/schemas"
+implementation = "READY"
+verification = "TESTED"
+documentation = "CURRENT"
+docs = ["docs/source/architecture/schemas.md"]
+
+[components.services]
+title = "Сервисы"
+path = "app/services"
+implementation = "READY"
+verification = "TESTED"
+documentation = "CURRENT"
+docs = ["docs/source/architecture/services.md"]
+
+[components.ormservice]
+title = "OrmService"
+path = "app/services/ormservice.py"
+implementation = "READY"
+verification = "TESTED"
+documentation = "CURRENT"
+docs = ["docs/source/architecture/ormservice.md"]
+
+[components.io_tools]
+title = "Импорт и экспорт"
+path = "app/io_tools"
+implementation = "READY"
+verification = "UNVERIFIED"
+documentation = "DRAFT"
+docs = []
+
+[overrides.io_tools]
+flags = ["REQUIRES AUDIT", "KNOWN ISSUE"]
+note = "Подсистема app/io_tools требует отдельного аудита; полный набор тестов содержит подтверждённые падения."
+
+[planned]

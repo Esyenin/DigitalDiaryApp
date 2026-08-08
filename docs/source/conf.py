@@ -24,6 +24,7 @@ root_doc = "index"
 
 extensions = [
     "auto_navigation",
+    "project_status",
     "myst_parser",
     "sphinx_design",
     "sphinx.ext.autodoc",
