@@ -1,4 +1,4 @@
 Sphinx==9.1.0
 myst-parser==5.1.0
 pydata-sphinx-theme==0.20.0
-sphinx-design==<версия из команды>
+sphinx-design==0.7.0

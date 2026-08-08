@@ -49,25 +49,6 @@
   box-shadow: inset 0 0 0 1px var(--pst-color-primary);
 }
 
-.search-section-filter__count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 1.35rem;
-  min-height: 1.35rem;
-  padding: 0 0.32rem;
-  border-radius: 999px;
-  color: var(--pst-color-text-muted);
-  background: var(--pst-color-background);
-  font-size: 0.7rem;
-  line-height: 1;
-}
-
-.search-section-filter__button.is-active
-  .search-section-filter__count {
-  color: var(--pst-color-primary);
-}
-
 .search-section-filter__empty {
   margin: 0.8rem 0 0;
   color: var(--pst-color-text-muted);

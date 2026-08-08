@@ -89,9 +89,7 @@
   }
 
   function createPageUrl(resultUrl) {
-    const url = new URL(resultUrl.href);
-    url.hash = "";
-    return url.href;
+    return new URL(resultUrl.href).href;
   }
 
   function getTitleParts(link) {
@@ -202,12 +200,7 @@
     labelElement.className = "search-section-filter__label";
     labelElement.textContent = label;
 
-    const countElement = document.createElement("span");
-    countElement.className = "search-section-filter__count";
-    countElement.textContent = "0";
-    countElement.setAttribute("aria-label", "Количество результатов");
-
-    button.append(labelElement, countElement);
+    button.append(labelElement);
 
     button.addEventListener("click", () => {
       activeSection = key;
@@ -261,12 +254,6 @@
     return panel;
   }
 
-  function setTextIfChanged(element, value) {
-    if (element && element.textContent !== value) {
-      element.textContent = value;
-    }
-  }
-
   function applyFilter() {
     const panel = ensureFilterPanel();
     const resultsRoot = document.querySelector("#search-results");
@@ -278,13 +265,8 @@
       return;
     }
 
-    const counts = new Map(
-      SECTIONS.map((section) => [section.key, 0])
-    );
-
     for (const item of items) {
       const sectionKey = item.dataset.searchSection || "root";
-      counts.set(sectionKey, (counts.get(sectionKey) || 0) + 1);
 
       const visible =
         activeSection === ALL_SECTION_KEY ||
@@ -299,11 +281,6 @@
 
     for (const button of buttons) {
       const sectionKey = button.dataset.sectionFilter;
-      const count =
-        sectionKey === ALL_SECTION_KEY
-          ? items.length
-          : counts.get(sectionKey) || 0;
-
       button.classList.toggle(
         "is-active",
         sectionKey === activeSection
@@ -313,10 +290,6 @@
         String(sectionKey === activeSection)
       );
 
-      setTextIfChanged(
-        button.querySelector(".search-section-filter__count"),
-        String(count)
-      );
     }
 
     const visibleCount = items.filter((item) => !item.hidden).length;
