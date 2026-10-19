@@ -91,6 +91,14 @@ class DiaryRepository:
         "marks": Mark,
         "comments": Comment,
     }
+    _import_references = {
+        "students": {"group_id": "groups"},
+        "schedule_group_links": {"group_id": "groups", "schedule_id": "schedules"},
+        "lessons": {"schedule_id": "schedules"},
+        "attendances": {"student_id": "students", "lesson_id": "lessons"},
+        "marks": {"student_id": "students", "lesson_id": "lessons"},
+        "comments": {"student_id": "students", "lesson_id": "lessons"},
+    }
     _delete_order = (
         Comment,
         Mark,
@@ -1098,6 +1106,28 @@ class DiaryRepository:
         if not any(data.values()):
             warnings.append("Smart import did not find groups or students.")
 
+        source_groups = {
+            row.get("id"): row.get("name")
+            for row in data["groups"] if row.get("id") is not None
+        }
+        for row_number, row in enumerate(data["students"], start=1):
+            group_name = row.get("group_name") or source_groups.get(row.get("group_id"))
+            group_id = row.get("group_id")
+            if group_name:
+                group_id = self.session.scalar(
+                    select(Group.id).where(Group.name == str(group_name).strip())
+                )
+            elif group_id is not None:
+                try:
+                    group_id = int(group_id)
+                except (TypeError, ValueError):
+                    errors.append(f"Smart student row {row_number}: invalid group id.")
+                    continue
+            try:
+                self._find_smart_student_target({**row, "group_id": group_id})
+            except ValueError as exc:
+                errors.append(f"Smart student row {row_number}: {exc}")
+
         return ImportPreview(
             source_path=source_path,
             strategy="smart",
@@ -1382,6 +1412,9 @@ class DiaryRepository:
 
         replace_existing = preview.mode == "replace"
         imported_counts = {sheet_name: 0 for sheet_name in preview.data}
+        imported_ids: dict[str, dict[int, int]] = {
+            sheet_name: {} for sheet_name in XLSX_SHEETS_ORDER
+        }
         try:
             if replace_existing:
                 self._clear_database_in_session()
@@ -1395,15 +1428,30 @@ class DiaryRepository:
                     normalized = self._prepare_import_row(sheet_name, model, row)
                     if not normalized:
                         continue
+                    source_id = normalized.pop("id", None)
+                    for field_name, parent_sheet in self._import_references.get(sheet_name, {}).items():
+                        source_reference = normalized.get(field_name)
+                        if source_reference in imported_ids[parent_sheet]:
+                            normalized[field_name] = imported_ids[parent_sheet][source_reference]
                     existing = None
                     if not replace_existing:
-                        existing = self._find_import_target(sheet_name, normalized)
+                        if preview.strategy == "smart" and sheet_name == "students":
+                            existing = self._find_smart_student_target(normalized)
+                        else:
+                            existing = self._find_import_target(sheet_name, normalized)
                     if existing is None:
-                        self.session.add(model(**normalized))
+                        existing = model(**normalized)
+                        self.session.add(existing)
                     else:
                         self._update_import_target(existing, normalized)
+                    self.session.flush()
+                    if source_id is not None:
+                        previous_id = imported_ids[sheet_name].setdefault(source_id, existing.id)
+                        if previous_id != existing.id:
+                            raise ValueError(
+                                f"Conflicting source id {source_id} in {sheet_name}."
+                            )
                     imported_counts[sheet_name] += 1
-                self.session.flush()
 
             self.session.commit()
         except IntegrityError as exc:
@@ -1476,7 +1524,10 @@ class DiaryRepository:
             value = row[column.name]
             if value == "":
                 value = None
-            if value is None and column.name in {"id", "created_at", "updated_at"}:
+            if value is None and (
+                column.name == "id" or column.nullable
+                or column.name in {"created_at", "updated_at"}
+            ):
                 continue
             normalized[column.name] = cls._normalize_import_value(
                 model,
@@ -1564,12 +1615,6 @@ class DiaryRepository:
         row: dict[str, object],
     ) -> Base | None:
         model = self._model_by_sheet[sheet_name]
-        row_id = row.get("id")
-        if row_id is not None:
-            target = self.session.get(model, row_id)
-            if target is not None:
-                return target
-
         if sheet_name == "groups":
             return self.session.scalar(
                 select(Group).where(Group.name == row.get("name"))
@@ -1627,6 +1672,47 @@ class DiaryRepository:
                 )
             )
         return None
+
+    def _find_smart_student_target(self, row: dict[str, object]) -> Student | None:
+        strong_matches: list[Student] = []
+        for field_name in ("personal_data", "bmstu_email"):
+            value = row.get(field_name)
+            if not value:
+                continue
+            column = getattr(Student, field_name)
+            matches = self.session.scalars(select(Student).where(column == value)).all()
+            if len(matches) > 1:
+                raise ValueError(f"multiple students have the same {field_name}.")
+            strong_matches.extend(matches)
+
+        if len({student.id for student in strong_matches}) > 1:
+            raise ValueError("student number and email identify different students.")
+        strong_match = strong_matches[0] if strong_matches else None
+
+        name_matches: list[Student] = []
+        if row.get("group_id") and row.get("surname") and row.get("first_name"):
+            name_matches = self.session.scalars(
+                select(Student).where(
+                    Student.group_id == row["group_id"],
+                    Student.surname == row["surname"],
+                    Student.first_name == row["first_name"],
+                )
+            ).all()
+            if row.get("patronymic"):
+                named = [
+                    student for student in name_matches
+                    if student.patronymic == row["patronymic"]
+                ]
+                if named:
+                    name_matches = named
+
+        if strong_match is not None:
+            if name_matches and strong_match.id not in {student.id for student in name_matches}:
+                raise ValueError("name and group identify a different student.")
+            return strong_match
+        if len(name_matches) > 1:
+            raise ValueError("multiple students match the name and group; add a student number or email.")
+        return name_matches[0] if name_matches else None
 
     @staticmethod
     def _update_import_target(target: Base, row: dict[str, object]) -> None:

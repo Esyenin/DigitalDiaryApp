@@ -139,3 +139,128 @@ def test_template_accepts_missing_optional_email_and_skips_missing_group(tmp_pat
         assert student.bmstu_email is None
     finally:
         repo.close()
+
+
+def test_standard_merge_remaps_foreign_ids_and_is_repeatable(tmp_path, monkeypatch):
+    monkeypatch.setattr(repository_module, "DATABASE_URL", f"sqlite:///{tmp_path / 'foreign.db'}")
+    workbook = Workbook()
+    groups = workbook.active
+    groups.title = "groups"
+    groups.append(XLSX_COLUMNS_BY_SHEET["groups"])
+    groups.append([1, "REMOTE", "Physics", None, None])
+    students = workbook.create_sheet("students")
+    students.append(XLSX_COLUMNS_BY_SHEET["students"])
+    students.append([1, 1, "New", "Person", None, None, None, None, None])
+    source = tmp_path / "foreign.xlsx"
+    workbook.save(source)
+
+    repo = repository_module.DiaryRepository()
+    try:
+        repo.session.add(Group(name="LOCAL", speciality="Local subject"))
+        repo.session.flush()
+        repo.session.add(Student(group_id=1, surname="Local", first_name="Student"))
+        repo.session.commit()
+
+        for _ in range(2):
+            preview = repo.preview_import_from_xlsx(source, strategy="standard")
+            assert preview.errors == []
+            repo.import_from_preview(preview)
+
+        local_group = repo.session.scalar(select(Group).where(Group.name == "LOCAL"))
+        imported_group = repo.session.scalar(select(Group).where(Group.name == "REMOTE"))
+        imported_student = repo.session.scalar(
+            select(Student).where(Student.surname == "New")
+        )
+        assert local_group.id == 1
+        assert local_group.speciality == "Local subject"
+        assert imported_group.id != local_group.id
+        assert imported_student.group_id == imported_group.id
+        assert len(repo.session.scalars(select(Student)).all()) == 2
+    finally:
+        repo.close()
+
+
+def test_empty_optional_cell_preserves_existing_value(tmp_path, monkeypatch):
+    monkeypatch.setattr(repository_module, "DATABASE_URL", f"sqlite:///{tmp_path / 'blank.db'}")
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Students"
+    sheet.append(["group_id", "surname", "first_name", "bmstu_email"])
+    sheet.append([1, "Ivanov", "Ivan", None])
+    source = tmp_path / "blank.xlsx"
+    workbook.save(source)
+
+    repo = repository_module.DiaryRepository()
+    try:
+        repo.session.add(Group(name="IU7-11"))
+        repo.session.flush()
+        repo.session.add(Student(
+            group_id=1, surname="Ivanov", first_name="Ivan",
+            bmstu_email="saved@example.org",
+        ))
+        repo.session.commit()
+
+        preview = repo.preview_import_from_xlsx(source, strategy="template")
+        assert preview.row_counts == {"students": 1}
+        repo.import_from_preview(preview)
+        assert repo.session.scalar(select(Student)).bmstu_email == "saved@example.org"
+    finally:
+        repo.close()
+
+
+def test_smart_preview_rejects_ambiguous_student_match(tmp_path, monkeypatch):
+    monkeypatch.setattr(repository_module, "DATABASE_URL", f"sqlite:///{tmp_path / 'ambiguous.db'}")
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Roster"
+    sheet.append(["Фамилия", "Имя", "Группа", "Почта"])
+    sheet.append(["Ivanov", "Ivan", "IU7-11", None])
+    source = tmp_path / "ambiguous.xlsx"
+    workbook.save(source)
+
+    repo = repository_module.DiaryRepository()
+    try:
+        repo.session.add(Group(name="IU7-11"))
+        repo.session.flush()
+        repo.session.add_all([
+            Student(group_id=1, surname="Ivanov", first_name="Ivan", bmstu_email="one@example.org"),
+            Student(group_id=1, surname="Ivanov", first_name="Ivan", bmstu_email="two@example.org"),
+        ])
+        repo.session.commit()
+
+        preview = repo.preview_import_from_xlsx(source, strategy="smart")
+        assert "multiple students" in preview.errors[0]
+        sheet["D2"] = "two@example.org"
+        workbook.save(source)
+        preview = repo.preview_import_from_xlsx(source, strategy="smart")
+        assert preview.errors == []
+        repo.import_from_preview(preview)
+        assert len(repo.session.scalars(select(Student)).all()) == 2
+    finally:
+        repo.close()
+
+
+def test_smart_preview_rejects_conflicting_identifiers(tmp_path, monkeypatch):
+    monkeypatch.setattr(repository_module, "DATABASE_URL", f"sqlite:///{tmp_path / 'conflict.db'}")
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Roster"
+    sheet.append(["Фамилия", "Имя", "Группа", "Почта", "Личное дело"])
+    sheet.append(["Ivanov", "Ivan", "IU7-11", "two@example.org", "A1"])
+    source = tmp_path / "conflict.xlsx"
+    workbook.save(source)
+
+    repo = repository_module.DiaryRepository()
+    try:
+        repo.session.add(Group(name="IU7-11"))
+        repo.session.flush()
+        repo.session.add_all([
+            Student(group_id=1, surname="Ivanov", first_name="Ivan", bmstu_email="one@example.org", personal_data="A1"),
+            Student(group_id=1, surname="Petrov", first_name="Petr", bmstu_email="two@example.org", personal_data="B2"),
+        ])
+        repo.session.commit()
+
+        preview = repo.preview_import_from_xlsx(source, strategy="smart")
+        assert "different students" in preview.errors[0]
+    finally:
+        repo.close()
