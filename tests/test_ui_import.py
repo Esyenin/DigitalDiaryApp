@@ -296,3 +296,33 @@ def test_smart_rejects_different_patronymic_before_updating(tmp_path, monkeypatc
         assert "patronymic conflicts" in preview.errors[0]
     finally:
         repo.close()
+
+
+def test_smart_fills_missing_patronymic_for_identified_student(tmp_path, monkeypatch):
+    monkeypatch.setattr(repository_module, "DATABASE_URL", f"sqlite:///{tmp_path / 'fill_patronymic.db'}")
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Roster"
+    sheet.append(["Фамилия", "Имя", "Отчество", "Группа", "Почта"])
+    sheet.append(["Ivanov", "Ivan", "Sergeevich", "IU7-11", "ivan@example.org"])
+    source = tmp_path / "fill_patronymic.xlsx"
+    workbook.save(source)
+
+    repo = repository_module.DiaryRepository()
+    try:
+        repo.session.add(Group(name="IU7-11"))
+        repo.session.flush()
+        repo.session.add(Student(
+            group_id=1, surname="Ivanov", first_name="Ivan",
+            patronymic=None, bmstu_email="ivan@example.org",
+        ))
+        repo.session.commit()
+
+        preview = repo.preview_import_from_xlsx(source, strategy="smart")
+        assert preview.errors == []
+        repo.import_from_preview(preview)
+        students = repo.session.scalars(select(Student)).all()
+        assert len(students) == 1
+        assert students[0].patronymic == "Sergeevich"
+    finally:
+        repo.close()

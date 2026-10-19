@@ -1729,7 +1729,12 @@ class DiaryRepository:
             raise ValueError("student number and email identify different students.")
         strong_match = strong_matches[0] if strong_matches else None
         patronymic = row.get("patronymic")
-        if strong_match is not None and patronymic and strong_match.patronymic != patronymic:
+        if (
+            strong_match is not None
+            and patronymic
+            and strong_match.patronymic
+            and strong_match.patronymic != patronymic
+        ):
             raise ValueError("patronymic conflicts with the identified student.")
 
         name_matches: list[Student] = []
