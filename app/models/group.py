@@ -2,7 +2,7 @@
 Модель группы студентов. Является core-моделью.
 """
 from typing import List, Optional
-from sqlalchemy import String
+from sqlalchemy import String, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
@@ -21,6 +21,8 @@ class Group(Base):
     # Столбцы модели
     name: Mapped[str] = mapped_column(String(MAX_LEN["name"]), unique=True)
     speciality: Mapped[Optional[str]] = mapped_column(String(MAX_LEN["speciality"]))
+    is_archived: Mapped[bool] = mapped_column(default=False, server_default=false())
+    archive_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     # Связи с занятиями в расписании (One-to-Many)
     schedule_links: Mapped[List["ScheduleGroupLink"]] = relationship(
@@ -32,3 +34,4 @@ class Group(Base):
         back_populates="group",
         cascade="all, delete-orphan",
     )
+    memberships: Mapped[List["GroupMembership"]] = relationship(back_populates="group")

@@ -36,10 +36,13 @@ class StudentCard(QFrame):
 
         edit_button = QPushButton("Edit")
         edit_button.setObjectName("CardEditButton")
-        delete_button = QPushButton("Delete")
+        delete_button = QPushButton("Archive" if student.status == "active" else "Archived")
         delete_button.setObjectName("CardDeleteButton")
         edit_button.clicked.connect(lambda: self.edit_clicked.emit(self.student))
         delete_button.clicked.connect(lambda: self.delete_clicked.emit(self.student))
+        if student.status != "active":
+            edit_button.setEnabled(False)
+            delete_button.setEnabled(False)
 
         layout.addWidget(icon)
         layout.addLayout(text_box)

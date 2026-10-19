@@ -2,7 +2,9 @@
 Модель студентов.
 """
 from typing import List, Optional
-from sqlalchemy import ForeignKey, String
+from datetime import date
+
+from sqlalchemy import Date, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
@@ -31,9 +33,14 @@ class Student(Base):
     patronymic: Mapped[Optional[str]] = mapped_column(String(MAX_LEN["patronymic"]))
     personal_data: Mapped[Optional[str]] = mapped_column(String(MAX_LEN["personal_data"]))
     bmstu_email: Mapped[Optional[str]] = mapped_column(String(MAX_LEN["bmstu_email"]))
+    status: Mapped[str] = mapped_column(String(16), default="active", server_default="active")
+    archived_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    archive_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     # Связь с группой (Many-to-One)
     group: Mapped["Group"] = relationship(back_populates="students")
+    memberships: Mapped[List["GroupMembership"]] = relationship(back_populates="student")
+    lesson_participations: Mapped[List["LessonParticipant"]] = relationship(back_populates="student")
     # Связи с посещенными занятиями (One-to-Many)
     attendances: Mapped[List["Attendance"]] = relationship(
         back_populates="student",

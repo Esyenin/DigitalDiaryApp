@@ -48,6 +48,8 @@ class LessonCreateSchema(LessonBaseSchema):
     schedule_id: int
     topic: str | None = Field(default=None, max_length=MAX_LEN["topic"])
     date: date_type
+    participants_complete: bool | None = None
+    roster_origin: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -72,6 +74,8 @@ class LessonFilterSchema(LessonBaseSchema):
     schedule_id: int | None = None
     topic: str | None = Field(default=None, max_length=MAX_LEN["topic"])
     date: date_type | None = None
+    participants_complete: bool | None = None
+    roster_origin: str | None = None
 
 
 class LessonUpdateSchema(LessonBaseSchema):

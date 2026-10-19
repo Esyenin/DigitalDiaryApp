@@ -43,7 +43,9 @@ from app.models import (
     Base,
     Comment,
     Group,
+    GroupMembership,
     Lesson,
+    LessonParticipant,
     Mark,
     Schedule,
     ScheduleGroupLink,
@@ -51,6 +53,7 @@ from app.models import (
 )
 from app.ui.data.calendar import SemesterSettings, day_index, week_type_for_number
 from app.ui.data.schedule_migration import ensure_schedule_schema
+from app.ui.data.membership_migration import ensure_membership_schema, set_membership_import_mode
 
 
 class RepositoryError(Exception):
@@ -92,6 +95,8 @@ class DiaryRepository:
         "attendances": Attendance,
         "marks": Mark,
         "comments": Comment,
+        "group_memberships": GroupMembership,
+        "lesson_participants": LessonParticipant,
     }
     _import_references = {
         "students": {"group_id": "groups"},
@@ -100,6 +105,8 @@ class DiaryRepository:
         "attendances": {"student_id": "students", "lesson_id": "lessons"},
         "marks": {"student_id": "students", "lesson_id": "lessons"},
         "comments": {"student_id": "students", "lesson_id": "lessons"},
+        "group_memberships": {"student_id": "students", "group_id": "groups"},
+        "lesson_participants": {"student_id": "students", "lesson_id": "lessons", "group_id": "groups"},
     }
     _delete_order = (
         Comment,
@@ -187,6 +194,7 @@ class DiaryRepository:
         if DATABASE_URL.startswith("sqlite"):
             event.listen(self.engine, "connect", self._enable_sqlite_foreign_keys)
         ensure_schedule_schema(self.engine)
+        ensure_membership_schema(self.engine)
         self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
         self.session: Session = self.session_factory()
         self.import_export_service = ImportExportService()
@@ -351,7 +359,7 @@ class DiaryRepository:
         """Kept for older UI calls; records are now created only by teacher input."""
         self.session.commit()
 
-    def list_groups(self) -> list[Group]:
+    def list_groups(self, *, include_archived: bool = False) -> list[Group]:
         self.refresh()
         stmt = (
             select(Group)
@@ -368,9 +376,13 @@ class DiaryRepository:
             )
             .order_by(Group.name)
         )
+        if not include_archived:
+            stmt = stmt.where(Group.is_archived.is_(False))
         return list(self.session.scalars(stmt).all())
 
-    def list_students(self, group_id: int | None = None) -> list[Student]:
+    def list_students(
+        self, group_id: int | None = None, *, include_archived: bool = False
+    ) -> list[Student]:
         self.refresh()
         stmt = (
             select(Student)
@@ -386,6 +398,8 @@ class DiaryRepository:
         )
         if group_id is not None:
             stmt = stmt.where(Student.group_id == group_id)
+        if not include_archived:
+            stmt = stmt.where(Student.status == "active")
         return list(self.session.scalars(stmt).all())
 
     def get_group(self, group_id: int) -> Group | None:
@@ -481,11 +495,45 @@ class DiaryRepository:
         )
 
     def students_for_lesson(self, lesson: Lesson) -> list[Student]:
-        students: dict[int, Student] = {}
-        for link in lesson.schedule.group_links:
-            for student in link.group.students:
-                students[student.id] = student
-        return sorted(students.values(), key=lambda item: (item.surname, item.first_name))
+        if lesson.roster_origin == "unfixed" and lesson.date <= date.today():
+            group_ids = {link.group_id for link in lesson.schedule.group_links}
+            memberships = self.session.scalars(select(GroupMembership).where(
+                GroupMembership.group_id.in_(group_ids),
+                GroupMembership.start_date <= lesson.date,
+                GroupMembership.known_from <= lesson.date,
+                or_(GroupMembership.end_date.is_(None), GroupMembership.end_date > lesson.date),
+            )).all() if group_ids else []
+            if memberships:
+                existing_ids = {item.student_id for item in lesson.participants}
+                for membership in memberships:
+                    if membership.student_id not in existing_ids:
+                        self.session.add(LessonParticipant(
+                            lesson_id=lesson.id, student_id=membership.student_id,
+                            group_id=membership.group_id, source="snapshot"
+                        ))
+                self.session.flush()
+                lesson.participants_complete = True
+                lesson.roster_origin = "snapshot"
+                self._commit_or_raise("Lesson participants could not be fixed.")
+        ids = {item.student_id for item in lesson.participants}
+        if lesson.roster_origin == "unfixed" and lesson.date > date.today():
+            group_ids = {link.group_id for link in lesson.schedule.group_links}
+            if group_ids:
+                ids.update(self.session.scalars(select(GroupMembership.student_id).where(
+                    GroupMembership.group_id.in_(group_ids),
+                    GroupMembership.start_date <= lesson.date,
+                    GroupMembership.known_from <= date.today(),
+                    or_(GroupMembership.end_date.is_(None), GroupMembership.end_date > lesson.date),
+                )).all())
+        if not lesson.participants_complete:
+            ids.update(item.student_id for item in lesson.attendances)
+            ids.update(item.student_id for item in lesson.marks)
+            ids.update(item.student_id for item in lesson.comments)
+        students = [self.session.get(Student, student_id) for student_id in ids]
+        return sorted(
+            (student for student in students if student is not None),
+            key=lambda item: (item.surname, item.first_name),
+        )
 
     def schedule_groups_text(self, schedule: Schedule) -> str:
         names = [link.group.name for link in schedule.group_links]
@@ -530,20 +578,19 @@ class DiaryRepository:
         return None
 
     def lessons_for_student(self, student: Student) -> list[Lesson]:
-        group = self.get_group(student.group_id)
-        if group is None:
-            return []
-
-        lesson_ids: set[int] = set()
-        for link in group.schedule_links:
-            for lesson in link.schedule.lessons:
-                lesson_ids.add(lesson.id)
-
-        lessons = [
-            lesson
-            for lesson_id in lesson_ids
-            if (lesson := self.get_lesson(lesson_id)) is not None
-        ]
+        lesson_ids = {item.lesson_id for item in student.lesson_participations}
+        lesson_ids.update(item.lesson_id for item in student.attendances)
+        lesson_ids.update(item.lesson_id for item in student.marks)
+        lesson_ids.update(item.lesson_id for item in student.comments)
+        for membership in student.memberships:
+            for link in membership.group.schedule_links:
+                for lesson in link.schedule.lessons:
+                    if (membership.start_date <= lesson.date
+                            and (membership.end_date is None or lesson.date < membership.end_date)
+                            and membership.known_from <= lesson.date
+                            and lesson.roster_origin == "unfixed"):
+                        lesson_ids.add(lesson.id)
+        lessons = [lesson for lesson_id in lesson_ids if (lesson := self.get_lesson(lesson_id))]
         return sorted(lessons, key=lambda item: (item.date, item.schedule.time))
 
     def save_lesson_student_record(
@@ -555,6 +602,22 @@ class DiaryRepository:
         comment_text: str,
         mark_value: int | None,
     ) -> None:
+        if lesson.participants_complete and student.id not in {
+            item.student_id for item in lesson.participants
+        }:
+            raise RepositoryError("Student is not in the fixed lesson roster.")
+        if not any(item.student_id == student.id for item in lesson.participants):
+            group_ids = {link.group_id for link in lesson.schedule.group_links}
+            known_groups = {item.group_id for item in student.memberships
+                            if item.group_id in group_ids
+                            and item.start_date <= lesson.date
+                            and (item.end_date is None or item.end_date > lesson.date)
+                            and item.known_from <= lesson.date}
+            self.session.add(LessonParticipant(
+                lesson_id=lesson.id, student_id=student.id,
+                group_id=next(iter(known_groups)) if len(known_groups) == 1 else None,
+                source="evidence"
+            ))
         attendance = self.session.scalar(
             select(Attendance).where(
                 Attendance.lesson_id == lesson.id,
@@ -616,7 +679,7 @@ class DiaryRepository:
 
         self._commit_or_raise("Lesson record was not saved.")
 
-    def lesson_attendance_summary(self, lesson: Lesson) -> dict[str, int]:
+    def lesson_attendance_summary(self, lesson: Lesson) -> dict[str, int | str]:
         students = self.students_for_lesson(lesson)
         present = 0
         for student in students:
@@ -627,64 +690,58 @@ class DiaryRepository:
         return {
             "total": total,
             "present": present,
-            "absent": max(total - present, 0),
-            "rate": round(present / total * 100) if total else 0,
+            "absent": max(total - present, 0) if lesson.participants_complete else "-",
+            "rate": round(present / total * 100) if total and lesson.participants_complete else "-",
         }
+
+    def _group_participant_ids(self, lesson: Lesson, group_id: int) -> set[int]:
+        participant_ids = {item.student_id for item in lesson.participants
+                           if item.group_id == group_id}
+        unresolved_ids = {item.student_id for item in lesson.participants
+                          if item.group_id is None}
+        unresolved_ids.update(item.student_id for item in lesson.attendances)
+        unresolved_ids.update(item.student_id for item in lesson.marks)
+        unresolved_ids.update(item.student_id for item in lesson.comments)
+        unresolved_ids.difference_update(
+            item.student_id for item in lesson.participants if item.group_id is not None
+        )
+        if len(lesson.schedule.group_links) == 1:
+            return participant_ids | unresolved_ids
+        known_ids = set(self.session.scalars(select(GroupMembership.student_id).where(
+            GroupMembership.group_id == group_id,
+            GroupMembership.start_date <= lesson.date,
+            GroupMembership.known_from <= lesson.date,
+            or_(GroupMembership.end_date.is_(None), GroupMembership.end_date > lesson.date),
+        )).all())
+        return participant_ids | (unresolved_ids & known_ids)
 
     def group_stats(self, group: Group) -> dict[str, int | str]:
-        students = list(group.students)
+        students = [student for student in group.students if student.status == "active"]
         lessons = self._completed_lessons_for_group(group)
-        lesson_ids = {lesson.id for lesson in lessons}
-        assessment_lessons = [
-            lesson for lesson in lessons if lesson.schedule.is_assessment
-        ]
-        assessment_ids = {lesson.id for lesson in assessment_lessons}
-        lab_ids = {
-            lesson.id
-            for lesson in assessment_lessons
-            if lesson.schedule.type == "Lab Work"
-        }
-        test_ids = {
-            lesson.id
-            for lesson in assessment_lessons
-            if lesson.schedule.type == "Control Work"
-        }
-
-        attendance_slots = len(students) * len(lessons)
-        present = sum(
-            1
-            for student in students
-            for item in student.attendances
-            if item.lesson_id in lesson_ids and item.is_visited
-        )
+        all_marks: list[int] = []
+        lab_marks: list[int] = []
+        test_marks: list[int] = []
+        present = attendance_slots = 0
+        complete = True
+        for lesson in lessons:
+            ids = self._group_participant_ids(lesson, group.id)
+            complete = complete and lesson.participants_complete
+            if lesson.participants_complete:
+                attendance_slots += len(ids)
+                present += sum(item.is_visited for item in lesson.attendances if item.student_id in ids)
+            if lesson.schedule.is_assessment:
+                scores = [mark.data for mark in lesson.marks if mark.student_id in ids]
+                all_marks.extend(scores)
+                if lesson.schedule.type == "Lab Work":
+                    lab_marks.extend(scores)
+                if lesson.schedule.type == "Control Work":
+                    test_marks.extend(scores)
         attendance_rate = (
             round(present / attendance_slots * 100) if attendance_slots else 0
-        )
-
-        overall_slots = len(students) * len(assessment_lessons)
-        lab_slots = len(students) * len(lab_ids)
-        test_slots = len(students) * len(test_ids)
-        overall_sum = sum(
-            mark.data
-            for student in students
-            for mark in student.marks
-            if mark.lesson_id in assessment_ids
-        )
-        lab_sum = sum(
-            mark.data
-            for student in students
-            for mark in student.marks
-            if mark.lesson_id in lab_ids
-        )
-        test_sum = sum(
-            mark.data
-            for student in students
-            for mark in student.marks
-            if mark.lesson_id in test_ids
-        )
-        overall = round(overall_sum / overall_slots) if overall_slots else 0
-        lab_average = round(lab_sum / lab_slots) if lab_slots else 0
-        test_average = round(test_sum / test_slots) if test_slots else "-"
+        ) if complete else "-"
+        overall = round(sum(all_marks) / len(all_marks)) if all_marks else 0
+        lab_average = round(sum(lab_marks) / len(lab_marks)) if lab_marks else 0
+        test_average = round(sum(test_marks) / len(test_marks)) if test_marks else "-"
         return {
             "overall": overall,
             "lab": lab_average,
@@ -692,50 +749,45 @@ class DiaryRepository:
             "attendance": attendance_rate,
             "students": len(students),
             "status": self._performance_status(
-                overall,
-                attendance_rate,
-                overall_slots,
-                attendance_slots,
-            ),
+                overall, attendance_rate if isinstance(attendance_rate, int) else 0,
+                len(all_marks), attendance_slots,
+            ) if complete else "Incomplete history",
         }
 
     def student_stats(self, student: Student) -> dict[str, int | str]:
         lessons = self._completed_lessons_for_student(student)
-        lesson_ids = {lesson.id for lesson in lessons}
-        assessment_lessons = [
-            lesson for lesson in lessons if lesson.schedule.is_assessment
-        ]
-        assessment_ids = {lesson.id for lesson in assessment_lessons}
-        lab_ids = {
-            lesson.id
-            for lesson in assessment_lessons
-            if lesson.schedule.type == "Lab Work"
-        }
-        test_ids = {
-            lesson.id
-            for lesson in assessment_lessons
-            if lesson.schedule.type == "Control Work"
-        }
-
-        present = sum(
-            1
-            for attendance_item in student.attendances
-            if attendance_item.lesson_id in lesson_ids and attendance_item.is_visited
+        uncertain_legacy_history = any(
+            membership.origin == "migrated_unknown"
+            and any(
+                lesson.date < membership.known_from and lesson.date <= date.today()
+                for link in membership.group.schedule_links
+                for lesson in link.schedule.lessons
+            )
+            for membership in student.memberships
         )
-        attendance = round(present / len(lessons) * 100) if lessons else 0
-        overall_sum = sum(
-            mark.data for mark in student.marks if mark.lesson_id in assessment_ids
-        )
-        lab_sum = sum(mark.data for mark in student.marks if mark.lesson_id in lab_ids)
-        test_sum = sum(mark.data for mark in student.marks if mark.lesson_id in test_ids)
+        all_scores: list[int] = []
+        lab_scores: list[int] = []
+        test_scores: list[int] = []
+        present = 0
+        for lesson in lessons:
+            present += any(
+                item.student_id == student.id and item.is_visited for item in lesson.attendances
+            )
+            if lesson.schedule.is_assessment:
+                scores = [item.data for item in lesson.marks if item.student_id == student.id]
+                all_scores.extend(scores)
+                if lesson.schedule.type == "Lab Work":
+                    lab_scores.extend(scores)
+                if lesson.schedule.type == "Control Work":
+                    test_scores.extend(scores)
+        attendance = (
+            round(present / len(lessons) * 100) if lessons else 0
+        ) if (not uncertain_legacy_history
+              and all(lesson.participants_complete for lesson in lessons)) else "-"
         return {
-            "overall": (
-                round(overall_sum / len(assessment_lessons))
-                if assessment_lessons
-                else "-"
-            ),
-            "lab": round(lab_sum / len(lab_ids)) if lab_ids else "-",
-            "test": round(test_sum / len(test_ids)) if test_ids else "-",
+            "overall": round(sum(all_scores) / len(all_scores)) if all_scores else "-",
+            "lab": round(sum(lab_scores) / len(lab_scores)) if lab_scores else "-",
+            "test": round(sum(test_scores) / len(test_scores)) if test_scores else "-",
             "attendance": attendance,
         }
 
@@ -751,9 +803,7 @@ class DiaryRepository:
         )
 
     def _completed_lessons_for_student(self, student: Student) -> list[Lesson]:
-        if student.group is None:
-            return []
-        return self._completed_lessons_for_group(student.group)
+        return [lesson for lesson in self.lessons_for_student(student) if lesson.date <= date.today()]
 
     @staticmethod
     def _performance_status(
@@ -797,16 +847,18 @@ class DiaryRepository:
         self._commit_or_raise("Group was not updated.")
 
     def delete_group(self, group: Group) -> None:
-        if any(
-            link.schedule.effective_until is not None or link.schedule.lessons
+        self.archive_group(group)
+
+    def archive_group(self, group: Group, reason: str | None = None) -> None:
+        if any(student.status == "active" for student in group.students) or any(
+            link.schedule.effective_until is None
+            or link.schedule.effective_until > date.today()
             for link in group.schedule_links
-        ) or any(
-            student.attendances or student.marks or student.comments
-            for student in group.students
         ):
-            raise RepositoryError("Group has lesson history and cannot be deleted.")
-        self.session.delete(group)
-        self._commit_or_raise("Group was not deleted.")
+            raise RepositoryError("Group is still used by active students or schedules.")
+        group.is_archived = True
+        group.archive_reason = (reason or "").strip() or None
+        self._commit_or_raise("Group was not archived.")
 
     def create_student(
         self,
@@ -840,6 +892,8 @@ class DiaryRepository:
         surname: str,
         email: str | None,
     ) -> None:
+        if group.id != student.group_id:
+            raise RepositoryError("Use Transfer with an effective date to change the student's group.")
         clean_first_name = first_name.strip()
         clean_surname = surname.strip()
         clean_email = (email or "").strip() or None
@@ -857,10 +911,88 @@ class DiaryRepository:
         self._commit_or_raise("Student was not updated.")
 
     def delete_student(self, student: Student) -> None:
-        if student.attendances or student.marks or student.comments:
-            raise RepositoryError("Student has lesson results and cannot be deleted.")
-        self.session.delete(student)
-        self._commit_or_raise("Student was not deleted.")
+        self.archive_student(student, reason="Archived from student list")
+
+    def membership_history(self, student: Student) -> list[GroupMembership]:
+        return list(self.session.scalars(
+            select(GroupMembership)
+            .where(GroupMembership.student_id == student.id)
+            .order_by(GroupMembership.start_date, GroupMembership.id)
+        ).all())
+
+    def transfer_student(
+        self, student: Student, group: Group, effective_date: date, *, as_of: date | None = None
+    ) -> None:
+        today = as_of or date.today()
+        if student.status != "active" or group.is_archived:
+            raise RepositoryError("Only active students and groups can be used for a transfer.")
+        if effective_date > today:
+            raise RepositoryError("Future transfers are not supported; choose today or an earlier date.")
+        try:
+            if self.engine.dialect.name == "sqlite":
+                self.session.execute(text("UPDATE students SET id = id WHERE id = :id"), {"id": student.id})
+            else:
+                self.session.execute(select(Student.id).where(Student.id == student.id).with_for_update()).first()
+            self.session.refresh(student)
+            if student.status != "active":
+                raise RepositoryError("Student was archived by another operation.")
+            if student.group_id == group.id:
+                self.session.rollback()
+                return
+            current = self.session.scalar(select(GroupMembership).where(
+                GroupMembership.student_id == student.id,
+                GroupMembership.end_date.is_(None),
+            ))
+            if current is None or current.group_id != student.group_id:
+                raise RepositoryError("Current group membership is inconsistent.")
+            if effective_date < current.start_date:
+                raise RepositoryError("Transfer date predates the current membership.")
+            current.end_date = effective_date
+            self.session.flush()
+            self.session.add(GroupMembership(
+                student_id=student.id, group_id=group.id,
+                start_date=effective_date, known_from=effective_date, origin="recorded",
+            ))
+            self.session.flush()
+            student.group_id = group.id
+            self._commit_or_raise("Student transfer was not saved.")
+        except (RepositoryError, SQLAlchemyError) as exc:
+            self.session.rollback()
+            if isinstance(exc, RepositoryError):
+                raise
+            raise RepositoryError("Student transfer was not saved.") from exc
+
+    def archive_student(
+        self, student: Student, *, reason: str, effective_date: date | None = None
+    ) -> None:
+        cutoff = effective_date or date.today()
+        if cutoff > date.today():
+            raise RepositoryError("Future archiving is not supported.")
+        if student.status != "active":
+            raise RepositoryError("Student is already archived.")
+        try:
+            if self.engine.dialect.name == "sqlite":
+                self.session.execute(text("UPDATE students SET id = id WHERE id = :id"), {"id": student.id})
+            else:
+                self.session.execute(select(Student.id).where(Student.id == student.id).with_for_update()).first()
+            self.session.refresh(student)
+            current = self.session.scalar(select(GroupMembership).where(
+                GroupMembership.student_id == student.id,
+                GroupMembership.end_date.is_(None),
+            ))
+            if current is None or cutoff < current.start_date:
+                raise RepositoryError("Student membership cannot be closed at that date.")
+            current.end_date = cutoff
+            self.session.flush()
+            student.status = "archived"
+            student.archived_at = cutoff
+            student.archive_reason = reason.strip() or "Archived"
+            self._commit_or_raise("Student was not archived.")
+        except (RepositoryError, SQLAlchemyError) as exc:
+            self.session.rollback()
+            if isinstance(exc, RepositoryError):
+                raise
+            raise RepositoryError("Student was not archived.") from exc
 
     def create_schedule(
         self,
@@ -1061,6 +1193,12 @@ class DiaryRepository:
     @staticmethod
     def _integrity_message(exc: IntegrityError) -> str:
         message = str(exc.orig)
+        if "overlapping group memberships" in message or "ex_group_membership_period" in message:
+            return "The student's group membership periods are overlapping."
+        if "membership history is immutable" in message:
+            return "Recorded group membership history cannot be changed."
+        if "archive requires closing membership" in message:
+            return "Close the student's current membership before archiving."
         if "groups.name" in message or "UNIQUE constraint failed: groups.name" in message:
             return "A group with this name already exists."
         if "uq_lesson_schedule_date" in message or "lessons.schedule_id, lessons.date" in message:
@@ -1206,11 +1344,13 @@ class DiaryRepository:
         if strategy == "standard" and not errors:
             for sheet_name, rows in data.items():
                 model = self._model_by_sheet[sheet_name]
-                schema = self._schema_for_import_entity(sheet_name)
                 for row_number, row in enumerate(rows, start=2):
                     try:
                         normalized = self._normalize_import_row(model, row)
-                        schema.model_validate(normalized)
+                        if sheet_name in {"group_memberships", "lesson_participants"}:
+                            self._validate_history_import_row(sheet_name, normalized)
+                        else:
+                            self._schema_for_import_entity(sheet_name).model_validate(normalized)
                     except (ValidationError, ValueError, TypeError) as exc:
                         errors.append(f"{sheet_name}, row {row_number}: {exc}")
 
@@ -1568,6 +1708,13 @@ class DiaryRepository:
         if preview.total_rows == 0:
             raise RepositoryError("The selected import does not contain rows.")
 
+        history_sheets = ("group_memberships", "lesson_participants")
+        history_restore = any(name in preview.data for name in history_sheets)
+        if history_restore:
+            expected = set(XLSX_SHEETS_ORDER) | set(history_sheets)
+            if preview.strategy != "standard" or set(preview.data) != expected:
+                raise RepositoryError("History restoration requires a complete standard workbook.")
+
         schedule_sheets = {
             "schedules", "schedule_group_links", "lessons", "attendances", "marks", "comments"
         }
@@ -1588,15 +1735,35 @@ class DiaryRepository:
         replace_existing = preview.mode == "replace"
         if replace_existing and self.session.scalar(select(Lesson.id).limit(1)) is not None:
             raise RepositoryError("Replacing this database would delete lesson history.")
+        if replace_existing and any(
+            self.session.scalar(select(model.id).limit(1)) is not None
+            for model in self._model_by_sheet.values()
+        ):
+            raise RepositoryError(
+                "Replacing a populated database would delete history; restore into an empty database."
+            )
         imported_counts = {sheet_name: 0 for sheet_name in preview.data}
         imported_ids: dict[str, dict[int, int]] = {
-            sheet_name: {} for sheet_name in XLSX_SHEETS_ORDER
+            sheet_name: {} for sheet_name in (*XLSX_SHEETS_ORDER, *history_sheets)
         }
         try:
+            if history_restore:
+                self.session.rollback()
+                connection = self.session.connection()
+                if self.engine.dialect.name == "sqlite":
+                    connection.exec_driver_sql("BEGIN IMMEDIATE")
+                else:
+                    connection.exec_driver_sql("LOCK TABLE students IN ACCESS EXCLUSIVE MODE")
+                if any(self.session.scalar(select(model.id).limit(1)) is not None
+                       for model in self._model_by_sheet.values()):
+                    raise RepositoryError("History can only be restored into an empty database.")
             if replace_existing:
                 self._clear_database_in_session()
 
-            for sheet_name in XLSX_SHEETS_ORDER:
+            if history_restore:
+                set_membership_import_mode(self.session.connection(), enabled=True)
+
+            for sheet_name in (*XLSX_SHEETS_ORDER, *history_sheets):
                 rows = preview.data.get(sheet_name, [])
                 model = self._model_by_sheet.get(sheet_name)
                 if model is None:
@@ -1615,7 +1782,18 @@ class DiaryRepository:
                         if preview.strategy == "smart" and sheet_name == "students":
                             existing = self._find_smart_student_target(normalized)
                         else:
-                            existing = self._find_import_target(sheet_name, normalized)
+                            if sheet_name == "students" and source_id is not None:
+                                id_match = self.session.get(Student, source_id)
+                                if id_match is not None and (
+                                    id_match.surname == normalized.get("surname")
+                                    and id_match.first_name == normalized.get("first_name")
+                                    and (not normalized.get("bmstu_email") or
+                                         not id_match.bmstu_email or
+                                         id_match.bmstu_email == normalized["bmstu_email"])
+                                ):
+                                    existing = id_match
+                            if existing is None:
+                                existing = self._find_import_target(sheet_name, normalized)
                     if existing is None:
                         existing = model(**normalized)
                         self.session.add(existing)
@@ -1629,6 +1807,10 @@ class DiaryRepository:
                                 f"Conflicting source id {source_id} in {sheet_name}."
                             )
                     imported_counts[sheet_name] += 1
+
+            if history_restore:
+                self._validate_restored_history()
+                set_membership_import_mode(self.session.connection(), enabled=False)
 
             for lesson in self.session.scalars(select(Lesson).options(selectinload(Lesson.schedule))):
                 if lesson.date < lesson.schedule.effective_from or (
@@ -1652,6 +1834,29 @@ class DiaryRepository:
 
         self.session.expire_all()
         return {name: count for name, count in imported_counts.items() if count}
+
+    def _validate_restored_history(self) -> None:
+        for student in self.session.scalars(select(Student).options(selectinload(Student.memberships))):
+            current = [item for item in student.memberships if item.end_date is None]
+            if student.status == "active":
+                if student.archived_at is not None or len(current) != 1 or current[0].group_id != student.group_id:
+                    raise ValueError(f"Active student {student.id} has no matching open membership.")
+            elif student.status == "archived":
+                if (current or student.archived_at is None
+                        or not (student.archive_reason or "").strip()):
+                    raise ValueError(f"Archived student {student.id} has an invalid membership.")
+            else:
+                raise ValueError(f"Student {student.id} has an unknown status.")
+        evidence = set(self.session.execute(
+            select(Attendance.lesson_id, Attendance.student_id)
+        ).all())
+        evidence.update(self.session.execute(select(Mark.lesson_id, Mark.student_id)).all())
+        evidence.update(self.session.execute(select(Comment.lesson_id, Comment.student_id)).all())
+        participants = set(self.session.execute(
+            select(LessonParticipant.lesson_id, LessonParticipant.student_id)
+        ).all())
+        if not evidence <= participants:
+            raise ValueError("Result records are missing lesson participation evidence.")
 
     def clear_database(self) -> None:
         try:
@@ -1733,6 +1938,21 @@ class DiaryRepository:
         return normalized
 
     @staticmethod
+    def _validate_history_import_row(sheet_name: str, row: dict[str, object]) -> None:
+        missing = [name for name in XLSX_REQUIRED_COLUMNS_BY_SHEET[sheet_name]
+                   if row.get(name) is None]
+        if missing:
+            raise ValueError("Missing required values: " + ", ".join(missing))
+        if sheet_name == "group_memberships":
+            end = row.get("end_date")
+            if end is not None and end < row["start_date"]:
+                raise ValueError("Membership end predates its start.")
+            if row["origin"] not in {"recorded", "migrated_unknown"}:
+                raise ValueError("Unknown membership origin.")
+        elif row["source"] not in {"snapshot", "evidence"}:
+            raise ValueError("Unknown participant source.")
+
+    @staticmethod
     def _normalize_import_value(
         model: type[Base],
         column_name: str,
@@ -1744,7 +1964,7 @@ class DiaryRepository:
             return int(value)
         if model is Mark and column_name == "data":
             return int(value)
-        if column_name in {"is_assessment", "is_visited"}:
+        if column_name in {"is_assessment", "is_visited", "is_archived", "participants_complete"}:
             if isinstance(value, bool):
                 return value
             normalized = str(value).strip().lower()
@@ -1753,7 +1973,7 @@ class DiaryRepository:
             if normalized in {"0", "false", "no", "n", "нет"}:
                 return False
             raise ValueError(f"Invalid boolean value: {value!r}")
-        if column_name in {"date", "effective_from", "effective_until"}:
+        if column_name in {"date", "effective_from", "effective_until", "start_date", "end_date", "known_from", "archived_at"}:
             if isinstance(value, datetime):
                 return value.date()
             if isinstance(value, date):
@@ -1816,13 +2036,23 @@ class DiaryRepository:
                 select(Group).where(Group.name == row.get("name"))
             )
         if sheet_name == "students":
-            return self.session.scalar(
+            exact = self.session.scalar(
                 select(Student).where(
                     Student.group_id == row.get("group_id"),
                     Student.first_name == row.get("first_name"),
                     Student.surname == row.get("surname"),
                 )
             )
+            if exact is not None:
+                return exact
+            if self.session.scalar(select(Student.id).where(
+                Student.first_name == row.get("first_name"),
+                Student.surname == row.get("surname"),
+            ).limit(1)) is not None:
+                raise ValueError(
+                    "Student with this name belongs to another group; a transfer date is required."
+                )
+            return None
         if sheet_name == "schedules":
             return self.session.scalar(
                 select(Schedule).where(
@@ -1917,13 +2147,26 @@ class DiaryRepository:
             return strong_match
         if len(name_matches) > 1:
             raise ValueError("multiple students match the name and group; add a student number or email.")
-        return name_matches[0] if name_matches else None
+        if name_matches:
+            return name_matches[0]
+        if row.get("surname") and row.get("first_name") and self.session.scalar(
+            select(Student.id).where(
+                Student.surname == row["surname"],
+                Student.first_name == row["first_name"],
+            ).limit(1)
+        ) is not None:
+            raise ValueError("Student may already belong to another group; a transfer date is required.")
+        return None
 
     @staticmethod
     def _update_import_target(target: Base, row: dict[str, object]) -> None:
         for field_name, value in row.items():
-            if field_name == "id":
+            if field_name == "id" or value is None:
                 continue
+            if isinstance(target, Student) and field_name == "group_id" and value != target.group_id:
+                raise ValueError(
+                    "Student group differs from the database; transfer date is required."
+                )
             if hasattr(target, field_name):
                 setattr(target, field_name, value)
 

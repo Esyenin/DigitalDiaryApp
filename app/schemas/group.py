@@ -80,6 +80,8 @@ class GroupCreateSchema(GroupBaseSchema):
 
     name: str = Field(..., min_length=1, max_length=MAX_LEN["name"])
     speciality: str | None = Field(default=None, max_length=MAX_LEN["speciality"])
+    is_archived: bool | None = None
+    archive_reason: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -106,6 +108,8 @@ class GroupFilterSchema(GroupBaseSchema):
     updated_at: datetime | None = None
     name: str | None = Field(default=None, max_length=MAX_LEN["name"])
     speciality: str | None = Field(default=None, max_length=MAX_LEN["speciality"])
+    is_archived: bool | None = None
+    archive_reason: str | None = None
 
     @model_validator(mode="before")
     @classmethod

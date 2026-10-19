@@ -348,12 +348,20 @@ def test_repository_clear_cannot_erase_lesson_history(repo):
 def test_group_and_student_deletion_cannot_cascade_into_history(repo):
     schedule, group, _, link, student, past, _ = _schedule(repo)
     service = OrmService(repo.session, auto_commit=False)
-    with pytest.raises(repository_module.RepositoryError, match="lesson results"):
-        repo.delete_student(student)
-    with pytest.raises(repository_module.RepositoryError, match="lesson history"):
+    result_ids = (
+        repo.session.scalar(select(Attendance.id)),
+        repo.session.scalar(select(Mark.id)),
+        repo.session.scalar(select(Comment.id)),
+    )
+    repo.delete_student(student)
+    assert student.status == "archived"
+    with pytest.raises(repository_module.RepositoryError, match="still used"):
         repo.delete_group(group)
     assert service.delete(student) is None
     assert service.delete(group) is None
     assert repo.session.get(ScheduleGroupLink, link.id) is not None
     assert repo.session.get(Lesson, past.id) is not None
     assert repo.session.get(Schedule, schedule.id) is not None
+    assert repo.session.get(Attendance, result_ids[0]) is not None
+    assert repo.session.get(Mark, result_ids[1]) is not None
+    assert repo.session.get(Comment, result_ids[2]) is not None

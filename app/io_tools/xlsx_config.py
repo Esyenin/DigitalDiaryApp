@@ -33,6 +33,8 @@ XLSX_COLUMNS_BY_SHEET = {
         "id",
         "name",
         "speciality",
+        "is_archived",
+        "archive_reason",
         "created_at",
         "updated_at",
     ),
@@ -58,6 +60,9 @@ XLSX_COLUMNS_BY_SHEET = {
         "patronymic",
         "personal_data",
         "bmstu_email",
+        "status",
+        "archived_at",
+        "archive_reason",
         "created_at",
         "updated_at",
     ),
@@ -73,6 +78,8 @@ XLSX_COLUMNS_BY_SHEET = {
         "schedule_id",
         "topic",
         "date",
+        "participants_complete",
+        "roster_origin",
         "created_at",
         "updated_at",
     ),
@@ -100,6 +107,13 @@ XLSX_COLUMNS_BY_SHEET = {
         "created_at",
         "updated_at",
     ),
+    "group_memberships": (
+        "id", "student_id", "group_id", "start_date", "end_date",
+        "origin", "known_from", "created_at", "updated_at",
+    ),
+    "lesson_participants": (
+        "id", "lesson_id", "student_id", "group_id", "source", "created_at", "updated_at",
+    ),
 }
 
 
@@ -114,6 +128,8 @@ XLSX_REQUIRED_COLUMNS_BY_SHEET = {
     "attendances": ("student_id", "lesson_id"),
     "marks": ("student_id", "lesson_id", "data"),
     "comments": ("student_id", "lesson_id"),
+    "group_memberships": ("student_id", "group_id", "start_date", "origin", "known_from"),
+    "lesson_participants": ("lesson_id", "student_id", "source"),
 }
 
 

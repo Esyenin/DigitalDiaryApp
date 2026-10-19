@@ -50,7 +50,7 @@ class GroupCard(QFrame):
         if actions:
             edit_button = QPushButton("Edit")
             edit_button.setObjectName("CardEditButton")
-            delete_button = QPushButton("Delete")
+            delete_button = QPushButton("Archive")
             delete_button.setObjectName("CardDeleteButton")
             edit_button.clicked.connect(lambda: self.edit_clicked.emit(self.group))
             delete_button.clicked.connect(lambda: self.delete_clicked.emit(self.group))

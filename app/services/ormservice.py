@@ -17,14 +17,15 @@ import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError
-from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import inspect as sa_inspect, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.io_tools import ImportExportService
 from app.io_tools.xlsx_config import normalize_sheet_keys
 import app.services as services_package
-from app.models import Base, Group, Schedule, ScheduleGroupLink, Student
+from app.models import (Base, Group, GroupMembership, LessonParticipant,
+                        Schedule, ScheduleGroupLink, Student)
 from app.services.base import BaseService
 
 
@@ -981,6 +982,13 @@ class OrmService:
             model_names,
             file_path,
         )
+        if model_names is None and any(
+            self.session.scalar(select(model.id).limit(1)) is not None
+            for model in (GroupMembership, LessonParticipant)
+        ):
+            raise OrmServiceError(
+                "Full history export requires DiaryRepository.export_to_xlsx."
+            )
 
         try:
             sheet_keys = normalize_sheet_keys(
@@ -1028,6 +1036,10 @@ class OrmService:
         )
 
         imported_data = self._import_export_service.import_from_xlsx(file_path)
+        if any(name in imported_data for name in ("group_memberships", "lesson_participants")):
+            raise OrmServiceError(
+                "History workbook requires the version-aware DiaryRepository.import_from_preview."
+            )
 
         try:
             allowed_sheet_keys = normalize_sheet_keys(

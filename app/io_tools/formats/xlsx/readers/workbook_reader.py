@@ -98,6 +98,10 @@ class StandardWorkbookReader:
             for sheet_name in XLSX_SHEETS_ORDER
             if sheet_name in sheet_names
         ]
+        expected_order.extend(
+            sheet_name for sheet_name in XLSX_COLUMNS_BY_SHEET
+            if sheet_name not in XLSX_SHEETS_ORDER and sheet_name in sheet_names
+        )
         if sheet_names != expected_order:
             result.add_error(
                 "Листы стандартного XLSX должны идти в порядке экспорта: "

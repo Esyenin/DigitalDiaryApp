@@ -1,7 +1,7 @@
 """
 Схемы Pydantic для сущности студента.
 """
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import Field, field_validator, model_validator
@@ -60,6 +60,9 @@ class StudentCreateSchema(StudentBaseSchema):
     patronymic: str | None = Field(default=None, max_length=MAX_LEN["patronymic"])
     personal_data: str | None = Field(default=None, max_length=MAX_LEN["personal_data"])
     bmstu_email: str | None = Field(default=None, max_length=MAX_LEN["bmstu_email"])
+    status: str | None = None
+    archived_at: date | None = None
+    archive_reason: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -90,6 +93,9 @@ class StudentFilterSchema(StudentBaseSchema):
     patronymic: str | None = Field(default=None, max_length=MAX_LEN["patronymic"])
     personal_data: str | None = Field(default=None, max_length=MAX_LEN["personal_data"])
     bmstu_email: str | None = Field(default=None, max_length=MAX_LEN["bmstu_email"])
+    status: str | None = None
+    archived_at: date | None = None
+    archive_reason: str | None = None
 
 
 class StudentUpdateSchema(StudentBaseSchema):

@@ -74,6 +74,10 @@ def clear_layout(layout) -> None:
             clear_layout(child_layout)
 
 
+def format_percent(value: int | str) -> str:
+    return f"{value}%" if isinstance(value, int) else str(value)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -86,6 +90,7 @@ class MainWindow(QMainWindow):
             self.semester_settings,
         )
         self.student_filter_group_id: int | None = None
+        self.show_archived_students = False
         self.detail_page: QWidget | None = None
         self.navigation_history: list[tuple[str, object | None]] = []
         self.current_route: tuple[str, object | None] = ("main", "schedule")
@@ -617,12 +622,18 @@ class MainWindow(QMainWindow):
     def render_settings_students(self) -> None:
         clear_layout(self.ui.settingsStudentsFreeSpace)
         scroll, layout = self._make_scroll_vbox()
-        students = self.repository.list_students(self.student_filter_group_id)
+        archived_toggle = QCheckBox("Show archived students")
+        archived_toggle.setChecked(self.show_archived_students)
+        archived_toggle.toggled.connect(self._set_show_archived_students)
+        layout.addWidget(archived_toggle)
+        students = self.repository.list_students(
+            self.student_filter_group_id, include_archived=self.show_archived_students
+        )
         for student in students:
             card = StudentCard(
                 student,
                 self.repository.full_student_name(student),
-                student.group.name,
+                student.group.name if student.status == "active" else "Archived",
             )
             card.clicked.connect(self.show_student_detail)
             card.edit_clicked.connect(self.show_student_dialog)
@@ -630,6 +641,10 @@ class MainWindow(QMainWindow):
             layout.addWidget(card)
         layout.addStretch()
         self._add_single_widget(self.ui.settingsStudentsFreeSpace, scroll)
+
+    def _set_show_archived_students(self, enabled: bool) -> None:
+        self.show_archived_students = enabled
+        self.render_settings_students()
 
     def show_student_filter_menu(self) -> None:
         menu = QMenu(self)
@@ -756,10 +771,13 @@ class MainWindow(QMainWindow):
         summary = self.repository.lesson_attendance_summary(lesson)
         stats = QHBoxLayout()
         stats.setSpacing(18)
-        stats.addWidget(make_metric("Total Students", summary["total"], "MetricWhite"))
+        stats.addWidget(make_metric(
+            "Total Students" if lesson.participants_complete else "Known Students",
+            summary["total"], "MetricWhite",
+        ))
         stats.addWidget(make_metric("Present", summary["present"], "MetricGreen"))
         stats.addWidget(make_metric("Absent", summary["absent"], "MetricRed"))
-        stats.addWidget(make_metric("Attendance Rate", f"{summary['rate']}%", "MetricBlue"))
+        stats.addWidget(make_metric("Attendance Rate", format_percent(summary["rate"]), "MetricBlue"))
         layout.addLayout(stats)
 
         table = self._make_table("Student Details")
@@ -803,7 +821,7 @@ class MainWindow(QMainWindow):
         header_layout.setContentsMargins(28, 24, 28, 24)
         title = QLabel(f"Group {group.name}")
         title.setObjectName("DetailTitle")
-        subtitle = QLabel(f"{len(group.students)} students")
+        subtitle = QLabel(f"{sum(student.status == 'active' for student in group.students)} students")
         subtitle.setObjectName("DetailMeta")
         header_layout.addWidget(title)
         header_layout.addWidget(subtitle)
@@ -815,7 +833,7 @@ class MainWindow(QMainWindow):
         stats.addWidget(make_metric("Group Average", stats_data["overall"], "MetricBlue"))
         stats.addWidget(make_metric("Lab Work Average", stats_data["lab"], "MetricGreen"))
         stats.addWidget(make_metric("Test Average", stats_data["test"], "MetricRed"))
-        stats.addWidget(make_metric("Attendance Rate", f"{stats_data['attendance']}%", "MetricPurple"))
+        stats.addWidget(make_metric("Attendance Rate", format_percent(stats_data["attendance"]), "MetricPurple"))
         layout.addLayout(stats)
 
         table = self._make_table("Students")
@@ -826,7 +844,10 @@ class MainWindow(QMainWindow):
                 "TableHeader",
             )
         )
-        for student in sorted(group.students, key=lambda item: (item.surname, item.first_name)):
+        for student in sorted(
+            (item for item in group.students if item.status == "active"),
+            key=lambda item: (item.surname, item.first_name),
+        ):
             stats = self.repository.student_stats(student)
             name = make_link_button(self.repository.full_student_name(student))
             name.clicked.connect(lambda checked=False, current=student: self.show_student_detail(current))
@@ -839,7 +860,7 @@ class MainWindow(QMainWindow):
                         stats["overall"],
                         stats["lab"],
                         stats["test"],
-                        f"{stats['attendance']}%",
+                        format_percent(stats["attendance"]),
                         profile,
                     ]
                 )
@@ -973,14 +994,44 @@ class MainWindow(QMainWindow):
 
         title = QLabel(self.repository.full_student_name(student))
         title.setObjectName("DetailTitle")
-        group_link = self._make_group_links_label("Group: ", [student.group])
+        group_link = self._make_group_links_label(
+            "Group: " if student.status == "active" else "Last group: ", [student.group]
+        )
         email = QLabel(f"Email: {student.bmstu_email or '-'}")
         email.setObjectName("DetailMeta")
 
         header_layout.addWidget(title)
         header_layout.addWidget(group_link)
         header_layout.addWidget(email)
+        if student.status == "active":
+            actions = QHBoxLayout()
+            transfer_button = QPushButton("Transfer")
+            transfer_button.clicked.connect(lambda: self.show_transfer_dialog(student))
+            archive_button = QPushButton("Archive")
+            archive_button.clicked.connect(lambda: self.delete_student(student))
+            actions.addWidget(transfer_button)
+            actions.addWidget(archive_button)
+            actions.addStretch()
+            header_layout.addLayout(actions)
+        else:
+            archive_info = QLabel(
+                f"Archived {student.archived_at or ''}: {student.archive_reason or '-'}"
+            )
+            archive_info.setObjectName("DetailMeta")
+            header_layout.addWidget(archive_info)
         layout.addWidget(header)
+
+        history = self._make_table("Group history")
+        history_layout = history.layout()
+        history_layout.addWidget(make_table_row(["Group", "From", "Until"], "TableHeader"))
+        for membership in self.repository.membership_history(student):
+            group = self.repository.get_group(membership.group_id)
+            end = membership.end_date.isoformat() if membership.end_date else "present"
+            label = "earlier dates unknown" if membership.origin == "migrated_unknown" else membership.start_date.isoformat()
+            history_layout.addWidget(make_table_row(
+                [group.name if group else str(membership.group_id), label, end], "TableRow"
+            ))
+        layout.addWidget(history)
 
         stats_data = self.repository.student_stats(student)
         stats = QHBoxLayout()
@@ -988,7 +1039,7 @@ class MainWindow(QMainWindow):
         stats.addWidget(make_metric("Overall Average", stats_data["overall"], "MetricBlue"))
         stats.addWidget(make_metric("Lab Average", stats_data["lab"], "MetricGreen"))
         stats.addWidget(make_metric("Test Average", stats_data["test"], "MetricRed"))
-        stats.addWidget(make_metric("Attendance", f"{stats_data['attendance']}%", "MetricPurple"))
+        stats.addWidget(make_metric("Attendance", format_percent(stats_data["attendance"]), "MetricPurple"))
         layout.addLayout(stats)
 
         records = self._make_table("Lesson Records")
@@ -1370,7 +1421,7 @@ class MainWindow(QMainWindow):
         self.refresh_all()
 
     def delete_group(self, group: Group) -> None:
-        if self._confirm(f"Delete group {group.name}?"):
+        if self._confirm(f"Archive group {group.name}?"):
             try:
                 self.repository.delete_group(group)
             except RepositoryError as exc:
@@ -1399,6 +1450,7 @@ class MainWindow(QMainWindow):
                 if group_input.itemData(index).id == student.group_id:
                     group_input.setCurrentIndex(index)
                     break
+            group_input.setEnabled(False)
 
         form.addRow("Group", group_input)
         form.addRow("First Name", first_name_input)
@@ -1440,13 +1492,65 @@ class MainWindow(QMainWindow):
         self.refresh_all()
 
     def delete_student(self, student: Student) -> None:
-        if self._confirm(f"Delete student {self.repository.full_student_name(student)}?"):
-            try:
-                self.repository.delete_student(student)
-            except RepositoryError as exc:
-                QMessageBox.warning(self, "Student", str(exc))
-                return
-            self.refresh_all()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Archive student")
+        form = QFormLayout(dialog)
+        date_input = QDateEdit()
+        date_input.setCalendarPopup(True)
+        date_input.setDate(QDate.currentDate())
+        date_input.setMaximumDate(QDate.currentDate())
+        reason_input = QLineEdit()
+        form.addRow("Effective date", date_input)
+        form.addRow("Reason", reason_input)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self.repository.archive_student(
+                student, reason=reason_input.text(), effective_date=date_input.date().toPython()
+            )
+        except RepositoryError as exc:
+            QMessageBox.warning(self, "Student", str(exc))
+            return
+        self.refresh_all()
+
+    def show_transfer_dialog(self, student: Student) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Transfer student")
+        form = QFormLayout(dialog)
+        group_input = QComboBox()
+        for group in self.repository.list_groups():
+            if group.id != student.group_id:
+                group_input.addItem(group.name, group)
+        if not group_input.count():
+            QMessageBox.warning(self, "Transfer", "Create another group first.")
+            return
+        date_input = QDateEdit()
+        date_input.setCalendarPopup(True)
+        date_input.setDate(QDate.currentDate())
+        date_input.setMaximumDate(QDate.currentDate())
+        form.addRow("New group", group_input)
+        form.addRow("Effective date", date_input)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self.repository.transfer_student(
+                student, group_input.currentData(), date_input.date().toPython()
+            )
+        except RepositoryError as exc:
+            QMessageBox.warning(self, "Transfer", str(exc))
+            return
+        self.refresh_all()
+        refreshed = self.repository.get_student(student.id)
+        if refreshed is not None:
+            self.show_student_detail(refreshed, push_history=False)
 
     def _confirm(self, text: str) -> bool:
         return (

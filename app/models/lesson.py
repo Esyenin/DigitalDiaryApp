@@ -3,7 +3,7 @@
 """
 from datetime import date
 from typing import List, Optional
-from sqlalchemy import Date, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Boolean, Date, ForeignKey, String, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
@@ -28,6 +28,8 @@ class Lesson(Base):
     schedule_id: Mapped[int] = mapped_column(ForeignKey("schedules.id", ondelete="CASCADE"))
     topic: Mapped[Optional[str]] = mapped_column(String(MAX_LEN["topic"]))
     date: Mapped[date] = mapped_column(Date)
+    participants_complete: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    roster_origin: Mapped[str] = mapped_column(String(24), default="unfixed", server_default="unfixed")
 
     # Связь с занятием в расписании (Many-to-One)
     schedule: Mapped["Schedule"] = relationship(back_populates="lessons")
@@ -46,3 +48,4 @@ class Lesson(Base):
         back_populates="lesson",
         cascade="all, delete",
     )
+    participants: Mapped[List["LessonParticipant"]] = relationship(back_populates="lesson")
