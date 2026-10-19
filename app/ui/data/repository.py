@@ -11,7 +11,7 @@ from app.io_tools.application.human_table_import import (
 )
 
 from pydantic import ValidationError
-from sqlalchemy import create_engine, delete, event, select, text
+from sqlalchemy import create_engine, delete, event, func, or_, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
 
@@ -884,7 +884,22 @@ class DiaryRepository:
         lesson_type: str,
         is_assessment: bool,
         settings: SemesterSettings,
+        *,
+        as_of: date | None = None,
     ) -> None:
+        old_group_ids = {link.group_id for link in schedule.group_links}
+        new_group_ids = {group.id for group in groups}
+        changed = (
+            schedule.day != day
+            or schedule.time != lesson_time
+            or schedule.odd_or_even != week_type
+            or schedule.type != lesson_type
+            or schedule.is_assessment != is_assessment
+            or old_group_ids != new_group_ids
+        )
+        if not changed:
+            return
+        self._reject_protected_schedule(schedule, as_of=as_of)
         self._ensure_schedule_available(
             groups,
             day,
@@ -902,10 +917,10 @@ class DiaryRepository:
         schedule.type = lesson_type
         schedule.is_assessment = is_assessment
         for link in list(schedule.group_links):
-            self.session.delete(link)
-        self.session.flush()
-        for group in groups:
-            self.session.add(ScheduleGroupLink(group_id=group.id, schedule_id=schedule.id))
+            if link.group_id not in new_group_ids:
+                self.session.delete(link)
+        for group_id in new_group_ids - old_group_ids:
+            self.session.add(ScheduleGroupLink(group_id=group_id, schedule_id=schedule.id))
         if regenerate_lessons:
             for lesson in list(schedule.lessons):
                 self.session.delete(lesson)
@@ -913,9 +928,34 @@ class DiaryRepository:
         self.ensure_lessons_for_schedule(schedule, topic, settings)
         self._commit_or_raise("Schedule template was not updated.")
 
-    def delete_schedule(self, schedule: Schedule) -> None:
+    def delete_schedule(self, schedule: Schedule, *, as_of: date | None = None) -> None:
+        self._reject_protected_schedule(schedule, as_of=as_of)
         self.session.delete(schedule)
         self._commit_or_raise("Schedule template was not deleted.")
+
+    def _reject_protected_schedule(
+        self, schedule: Schedule, *, as_of: date | None = None
+    ) -> None:
+        cutoff = as_of or date.today()
+        protected_lesson = self.session.scalar(
+            select(Lesson.id)
+            .where(
+                Lesson.schedule_id == schedule.id,
+                or_(
+                    Lesson.date <= cutoff,
+                    Lesson.topic.is_not(None) & (func.trim(Lesson.topic) != ""),
+                    Lesson.attendances.any(),
+                    Lesson.marks.any(),
+                    Lesson.comments.any(),
+                ),
+            )
+            .limit(1)
+        )
+        if protected_lesson is not None:
+            raise RepositoryError(
+                "This schedule has protected lessons. Historical data takes priority; "
+                "editing or deleting this template will be available with future schedule versioning."
+            )
 
     def _commit_or_raise(self, fallback_message: str) -> None:
         try:
