@@ -18,7 +18,6 @@ XLSX_SHEETS_ORDER = (
 
 SMART_IMPORT_ENTITY_TYPES = (
     "groups",
-    "schedules",
     "students",
 )
 

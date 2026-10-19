@@ -766,8 +766,9 @@ def test_xlsx_config_separates_smart_and_strict_entity_types():
     """
     XLSX-конфиг явно разделяет сущности умного и строгого импорта.
     """
-    assert SMART_IMPORT_ENTITY_TYPES == ("groups", "schedules", "students")
+    assert SMART_IMPORT_ENTITY_TYPES == ("groups", "students")
     assert STRICT_IMPORT_ENTITY_TYPES == (
+        "schedules",
         "schedule_group_links",
         "lessons",
         "attendances",

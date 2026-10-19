@@ -264,3 +264,35 @@ def test_smart_preview_rejects_conflicting_identifiers(tmp_path, monkeypatch):
         assert "different students" in preview.errors[0]
     finally:
         repo.close()
+
+
+def test_smart_rejects_different_patronymic_before_updating(tmp_path, monkeypatch):
+    monkeypatch.setattr(repository_module, "DATABASE_URL", f"sqlite:///{tmp_path / 'patronymic.db'}")
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Roster"
+    sheet.append(["Фамилия", "Имя", "Отчество", "Группа", "Почта"])
+    sheet.append(["Ivanov", "Ivan", "Sergeevich", "IU7-11", None])
+    source = tmp_path / "patronymic.xlsx"
+    workbook.save(source)
+
+    repo = repository_module.DiaryRepository()
+    try:
+        repo.session.add(Group(name="IU7-11"))
+        repo.session.flush()
+        repo.session.add(Student(
+            group_id=1, surname="Ivanov", first_name="Ivan",
+            patronymic="Petrovich", bmstu_email="ivan@example.org",
+        ))
+        repo.session.commit()
+
+        preview = repo.preview_import_from_xlsx(source, strategy="smart")
+        assert "patronymic differs" in preview.errors[0]
+        assert repo.session.scalar(select(Student)).patronymic == "Petrovich"
+
+        sheet["E2"] = "ivan@example.org"
+        workbook.save(source)
+        preview = repo.preview_import_from_xlsx(source, strategy="smart")
+        assert "patronymic conflicts" in preview.errors[0]
+    finally:
+        repo.close()

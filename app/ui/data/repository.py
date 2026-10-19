@@ -1688,6 +1688,9 @@ class DiaryRepository:
         if len({student.id for student in strong_matches}) > 1:
             raise ValueError("student number and email identify different students.")
         strong_match = strong_matches[0] if strong_matches else None
+        patronymic = row.get("patronymic")
+        if strong_match is not None and patronymic and strong_match.patronymic != patronymic:
+            raise ValueError("patronymic conflicts with the identified student.")
 
         name_matches: list[Student] = []
         if row.get("group_id") and row.get("surname") and row.get("first_name"):
@@ -1698,13 +1701,16 @@ class DiaryRepository:
                     Student.first_name == row["first_name"],
                 )
             ).all()
-            if row.get("patronymic"):
-                named = [
+            if patronymic and name_matches:
+                name_matches = [
                     student for student in name_matches
-                    if student.patronymic == row["patronymic"]
+                    if student.patronymic == patronymic
                 ]
-                if named:
-                    name_matches = named
+                if not name_matches and strong_match is None:
+                    raise ValueError(
+                        "patronymic differs from existing students with this name and group; "
+                        "add a student number or email."
+                    )
 
         if strong_match is not None:
             if name_matches and strong_match.id not in {student.id for student in name_matches}:
