@@ -81,7 +81,6 @@ class DiaryRepository:
     """Thin UI-facing repository over the existing SQLAlchemy models."""
 
     _smart_entity_types = ("groups", "students")
-    _deferred_import_key = "__deferred_import__"
     _model_by_sheet = {
         "groups": Group,
         "schedules": Schedule,
@@ -1041,44 +1040,13 @@ class DiaryRepository:
             entity_type: str | None = None,
     ) -> ImportPreview:
         source_path = Path(file_path)
-
-        # Новый Smart Import вместо старого _preview_smart_import.
-        #
-        # Важно:
-        # preview здесь ничего не пишет в БД.
-        # Он только сообщает старому import dialog, что файл принят
-        # и при подтверждении нужно запускать новый smart importer.
         if strategy == "smart":
-            return self._deferred_import_preview(
-                source_path=source_path,
-                strategy=strategy,
-                mode=mode,
-                importer="smart",
-                description=(
-                    "Smart import will automatically scan the workbook and import "
-                    "recognized groups/students or supported multi-sheet data."
-                ),
-            )
-
-        # Новый Table Import вместо старого _preview_template_import.
-        #
-        # Сохраняем старое условие:
-        # раньше template и strict без sheet/range уходили в template/table-preview.
+            return self._preview_smart_import(source_path, mode)
         if strategy == "template" or (
                 strategy == "strict" and not sheet_name and not cell_range
         ):
-            return self._deferred_import_preview(
-                source_path=source_path,
-                strategy=strategy,
-                mode=mode,
-                importer="table",
-                description=(
-                    "Table import will search human-readable tables and import "
-                    "recognized groups, students and marks."
-                ),
-            )
+            return self._preview_template_import(source_path, mode)
 
-        # Стандартный импорт оставляем старым.
         request = ImportRequest(
             source_path=source_path,
             format_name="xlsx",
@@ -1090,6 +1058,16 @@ class DiaryRepository:
         )
         result = self.import_export_service.import_data(request)
         data, warnings, errors = self._payload_from_import_result(result)
+        if strategy == "standard" and not errors:
+            for sheet_name, rows in data.items():
+                model = self._model_by_sheet[sheet_name]
+                schema = self._schema_for_import_entity(sheet_name)
+                for row_number, row in enumerate(rows, start=2):
+                    try:
+                        normalized = self._normalize_import_row(model, row)
+                        schema.model_validate(normalized)
+                    except (ValidationError, ValueError, TypeError) as exc:
+                        errors.append(f"{sheet_name}, row {row_number}: {exc}")
 
         return ImportPreview(
             source_path=source_path,
@@ -1098,40 +1076,6 @@ class DiaryRepository:
             data=data,
             warnings=warnings,
             errors=errors,
-        )
-    def _deferred_import_preview(
-        self,
-        *,
-        source_path: Path,
-        strategy: str,
-        mode: str,
-        importer: str,
-        description: str,
-    ) -> ImportPreview:
-        """
-        Возвращает preview-заглушку для новых импортёров.
-
-        Старый UI ожидает ImportPreview, но новые importers сами читают файл
-        и сами пишут в БД только на этапе import_from_preview.
-        Поэтому preview здесь нужен только для совместимости со старым dialog.
-        """
-        return ImportPreview(
-            source_path=source_path,
-            strategy=strategy,
-            mode=mode,
-            data={
-                self._deferred_import_key: [
-                    {
-                        "importer": importer,
-                        "description": description,
-                    }
-                ]
-            },
-            warnings=[
-                description,
-                "Import will be executed after confirmation.",
-            ],
-            errors=[],
         )
     def _preview_smart_import(self, source_path: Path, mode: str) -> ImportPreview:
         data: dict[str, list[dict[str, object]]] = {
@@ -1430,114 +1374,7 @@ class DiaryRepository:
             if not value:
                 return None
         return value
-    def _deferred_importer_from_preview(self, preview: ImportPreview) -> str | None:
-        deferred_rows = preview.data.get(self._deferred_import_key)
-
-        if not deferred_rows:
-            return None
-
-        first_row = deferred_rows[0]
-
-        importer = first_row.get("importer")
-        if isinstance(importer, str):
-            return importer
-
-        return None
-    def _import_smart_from_preview(self, preview: ImportPreview) -> dict[str, int]:
-        """
-        Новый Smart Import, запускаемый через старый import dialog.
-
-        Заменяет старый strategy == "smart".
-        """
-        if preview.mode == "replace":
-            self.clear_database()
-
-        result = import_xlsx_with_multisheet_smart_import(preview.source_path)
-
-        if not result.is_valid:
-            raise RepositoryError(
-                self._format_external_import_report(
-                    title="Smart import failed.",
-                    created=result.created,
-                    warnings=result.warnings,
-                    errors=result.errors,
-                )
-            )
-
-        self.refresh()
-
-        return {
-            entity_type: count
-            for entity_type, count in result.created.items()
-            if count
-        }
-
-    def _import_table_from_preview(self, preview: ImportPreview) -> dict[str, int]:
-        """
-        Новый Table Import, запускаемый через старый import dialog.
-
-        Заменяет старый template/table import.
-        """
-        if preview.mode == "replace":
-            self.clear_database()
-
-        result = import_xlsx_with_human_table_import(preview.source_path)
-
-        if not result.is_valid:
-            raise RepositoryError(
-                self._format_external_import_report(
-                    title="Table import failed.",
-                    created=result.created,
-                    warnings=result.warnings,
-                    errors=result.errors,
-                )
-            )
-
-        self.refresh()
-
-        return {
-            entity_type: count
-            for entity_type, count in result.created.items()
-            if count
-        }
-    @staticmethod
-    def _format_external_import_report(
-        *,
-        title: str,
-        created: dict[str, int],
-        warnings: list[str],
-        errors: list[str],
-    ) -> str:
-        lines: list[str] = [title]
-
-        if created:
-            lines.append("")
-            lines.append("Создано:")
-            for entity_type, count in created.items():
-                lines.append(f"{entity_type}: {count}")
-
-        if warnings:
-            lines.append("")
-            lines.append("Предупреждения:")
-            for warning in warnings:
-                lines.append(f"- {warning}")
-
-        if errors:
-            lines.append("")
-            lines.append("Ошибки:")
-            for error in errors:
-                lines.append(f"- {error}")
-
-        return "\n".join(lines)
     def import_from_preview(self, preview: ImportPreview) -> dict[str, int]:
-        deferred_importer = self._deferred_importer_from_preview(preview)
-
-        if deferred_importer == "smart":
-            return self._import_smart_from_preview(preview)
-
-        if deferred_importer == "table":
-            return self._import_table_from_preview(preview)
-
         if preview.errors:
             raise RepositoryError(preview.errors[0])
         if preview.total_rows == 0:
@@ -1663,9 +1500,12 @@ class DiaryRepository:
         if column_name in {"is_assessment", "is_visited"}:
             if isinstance(value, bool):
                 return value
-            if isinstance(value, (int, float)):
-                return bool(value)
-            return str(value).strip().lower() in {"1", "true", "yes", "y", "да"}
+            normalized = str(value).strip().lower()
+            if normalized in {"1", "true", "yes", "y", "да"}:
+                return True
+            if normalized in {"0", "false", "no", "n", "нет"}:
+                return False
+            raise ValueError(f"Invalid boolean value: {value!r}")
         if column_name == "date":
             if isinstance(value, datetime):
                 return value.date()
