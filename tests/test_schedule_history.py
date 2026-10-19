@@ -294,6 +294,38 @@ def test_direct_services_and_sql_cannot_rewrite_historical_version(repo):
     assert repo.session.get(Lesson, past.id).topic == "Past lesson"
 
 
+def test_link_cannot_move_from_unused_schedule_into_historical_version(repo):
+    historical, group, other, historical_link, _, past, _ = _schedule(repo)
+    source = Schedule(day="Tuesday", time=time(11), odd_or_even="even", type="Seminar")
+    clean_target = Schedule(day="Wednesday", time=time(12), odd_or_even="even", type="Seminar")
+    repo.session.add_all([source, clean_target])
+    repo.session.flush()
+    movable = ScheduleGroupLink(group_id=other.id, schedule_id=source.id)
+    repo.session.add(movable)
+    repo.session.commit()
+
+    with pytest.raises(IntegrityError, match="historical group links are immutable"):
+        repo.session.execute(
+            text("UPDATE schedulegrouplinks SET schedule_id = :target WHERE id = :link"),
+            {"target": historical.id, "link": movable.id},
+        )
+    repo.session.rollback()
+    assert OrmService(repo.session, auto_commit=False).update(
+        movable, {"schedule_id": historical.id}
+    ) is None
+    assert repo.session.get(ScheduleGroupLink, movable.id).schedule_id == source.id
+    assert repo.session.get(ScheduleGroupLink, historical_link.id).schedule_id == historical.id
+    assert repo.session.get(Lesson, past.id).schedule_id == historical.id
+
+    repo.session.execute(
+        text("UPDATE schedulegrouplinks SET schedule_id = :target WHERE id = :link"),
+        {"target": clean_target.id, "link": movable.id},
+    )
+    repo.session.commit()
+    repo.session.expire_all()
+    assert repo.session.get(ScheduleGroupLink, movable.id).schedule_id == clean_target.id
+
+
 def test_database_rejects_lesson_outside_closed_version(repo):
     schedule, group, _, _, _, past, _ = _schedule(repo)
     _update(repo, schedule, [group], day="Tuesday")

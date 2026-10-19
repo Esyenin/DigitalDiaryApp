@@ -38,7 +38,10 @@ def _install_sqlite_history_guards(connection) -> None:
         "CREATE TRIGGER IF NOT EXISTS schedule_link_history_update BEFORE UPDATE ON schedulegrouplinks "
         "WHEN EXISTS (SELECT 1 FROM schedules WHERE id = OLD.schedule_id AND "
         "(effective_until IS NOT NULL OR EXISTS "
-        "(SELECT 1 FROM lessons WHERE schedule_id = OLD.schedule_id))) BEGIN "
+        "(SELECT 1 FROM lessons WHERE schedule_id = OLD.schedule_id))) OR "
+        "EXISTS (SELECT 1 FROM schedules WHERE id = NEW.schedule_id AND "
+        "(effective_until IS NOT NULL OR EXISTS "
+        "(SELECT 1 FROM lessons WHERE schedule_id = NEW.schedule_id))) BEGIN "
         "SELECT RAISE(ABORT, 'historical group links are immutable'); END",
         "CREATE TRIGGER IF NOT EXISTS schedule_link_history_delete BEFORE DELETE ON schedulegrouplinks "
         "WHEN EXISTS (SELECT 1 FROM schedules WHERE id = OLD.schedule_id AND "
@@ -56,6 +59,7 @@ def _install_sqlite_history_guards(connection) -> None:
         "effective_from <= NEW.date AND "
         "(effective_until IS NULL OR NEW.date < effective_until)); END",
     )
+    connection.exec_driver_sql("DROP TRIGGER IF EXISTS schedule_link_history_update")
     for statement in statements:
         connection.exec_driver_sql(statement)
 
@@ -98,6 +102,13 @@ def _install_postgresql_history_guards(connection) -> None:
                 (effective_until IS NOT NULL OR EXISTS
                 (SELECT 1 FROM lessons WHERE schedule_id = target_id))) THEN
                 RAISE EXCEPTION 'historical group links are immutable';
+            END IF;
+            IF TG_OP = 'UPDATE' THEN
+                IF EXISTS (SELECT 1 FROM schedules WHERE id = NEW.schedule_id AND
+                    (effective_until IS NOT NULL OR EXISTS
+                    (SELECT 1 FROM lessons WHERE schedule_id = NEW.schedule_id))) THEN
+                    RAISE EXCEPTION 'historical group links are immutable';
+                END IF;
             END IF;
             IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
             RETURN NEW;

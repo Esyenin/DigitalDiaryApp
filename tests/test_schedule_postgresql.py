@@ -6,6 +6,7 @@ from datetime import date, time, timedelta
 import pytest
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 
 from app.models import Attendance, Comment, Group, Lesson, Mark, Schedule, ScheduleGroupLink, Student
 from app.ui.data import repository as repository_module
@@ -77,6 +78,24 @@ def test_postgresql_migration_and_version_switch(monkeypatch):
             assert repo.session.get(Attendance, result_ids[1]).is_visited is True
             assert repo.session.get(Mark, result_ids[2]).data == 88
             assert repo.session.get(Comment, result_ids[3]).data == "Saved"
+
+            unused = Schedule(
+                day="Wednesday", time=time(12), odd_or_even="even", type="Seminar"
+            )
+            second_group = Group(name="PG-OTHER")
+            repo.session.add_all([unused, second_group])
+            repo.session.flush()
+            movable = ScheduleGroupLink(group_id=second_group.id, schedule_id=unused.id)
+            repo.session.add(movable)
+            repo.session.commit()
+            with pytest.raises(DBAPIError, match="historical group links are immutable"):
+                repo.session.execute(
+                    text("UPDATE schedulegrouplinks SET schedule_id = :target WHERE id = :link"),
+                    {"target": schedule.id, "link": movable.id},
+                )
+            repo.session.rollback()
+            assert repo.session.get(ScheduleGroupLink, movable.id).schedule_id == unused.id
+            assert repo.session.get(Lesson, result_ids[0]).schedule_id == schedule.id
         finally:
             repo.close()
             repo.engine.dispose()

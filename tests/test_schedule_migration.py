@@ -2,6 +2,7 @@ import sqlite3
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from app.models import Base
 from app.ui.data import schedule_migration
@@ -109,5 +110,43 @@ def test_failed_migration_rolls_back_schema_and_data(tmp_path, monkeypatch):
         with engine.connect() as connection:
             assert connection.execute(text("SELECT id FROM schedules")).scalar_one() == 42
             assert connection.execute(text("SELECT data FROM marks")).scalar_one() == 87
+    finally:
+        engine.dispose()
+
+
+def test_existing_sqlite_database_replaces_old_link_update_guard(tmp_path):
+    path = tmp_path / "test_existing_guard.db"
+    engine = _legacy_database(path)
+    try:
+        schedule_migration.ensure_schedule_schema(engine)
+        with engine.begin() as connection:
+            connection.execute(text(
+                "INSERT INTO schedules (id, series_key, revision, effective_from, "
+                "odd_or_even, type, is_assessment, day, time) VALUES "
+                "(43, 'unused-series', 1, '1900-01-01', "
+                "'even', 'Seminar', 0, 'Tuesday', '11:00:00')"
+            ))
+            connection.execute(text("INSERT INTO groups (id, name) VALUES (8, 'IU7-12')"))
+            connection.execute(text(
+                "INSERT INTO schedulegrouplinks (id, group_id, schedule_id) "
+                "VALUES (62, 8, 43)"
+            ))
+            connection.exec_driver_sql("DROP TRIGGER schedule_link_history_update")
+            connection.exec_driver_sql(
+                "CREATE TRIGGER schedule_link_history_update BEFORE UPDATE "
+                "ON schedulegrouplinks WHEN EXISTS "
+                "(SELECT 1 FROM lessons WHERE schedule_id = OLD.schedule_id) "
+                "BEGIN SELECT RAISE(ABORT, 'old guard'); END"
+            )
+
+        schedule_migration.ensure_schedule_schema(engine)
+        with engine.begin() as connection:
+            with pytest.raises(IntegrityError, match="historical group links are immutable"):
+                connection.execute(text(
+                    "UPDATE schedulegrouplinks SET schedule_id = 42 WHERE id = 62"
+                ))
+            assert connection.execute(text(
+                "SELECT schedule_id FROM schedulegrouplinks WHERE id = 62"
+            )).scalar_one() == 43
     finally:
         engine.dispose()
