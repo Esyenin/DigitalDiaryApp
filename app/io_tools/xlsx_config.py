@@ -43,6 +43,10 @@ XLSX_COLUMNS_BY_SHEET = {
         "is_assessment",
         "day",
         "time",
+        "series_key",
+        "revision",
+        "effective_from",
+        "effective_until",
         "created_at",
         "updated_at",
     ),
@@ -101,7 +105,9 @@ XLSX_COLUMNS_BY_SHEET = {
 
 XLSX_REQUIRED_COLUMNS_BY_SHEET = {
     "groups": ("name",),
-    "schedules": ("odd_or_even", "type", "day", "time"),
+    "schedules": (
+        "odd_or_even", "type", "day", "time", "series_key", "revision", "effective_from"
+    ),
     "students": ("group_id", "surname", "first_name"),
     "schedule_group_links": ("group_id", "schedule_id"),
     "lessons": ("schedule_id", "date"),

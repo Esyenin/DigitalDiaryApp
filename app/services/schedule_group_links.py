@@ -22,3 +22,10 @@ class ScheduleGroupLinkService(BaseService[ScheduleGroupLink]):
     update_schema = ScheduleGroupLinkUpdateSchema
     delete_schema = ScheduleGroupLinkDeleteSchema
     schema_fields = frozenset({"group_id", "schedule_id"})
+
+    def apply_update(self, db_obj, data):
+        if isinstance(db_obj, ScheduleGroupLink) and db_obj.schedule is not None and (
+            db_obj.schedule.effective_until is not None or db_obj.schedule.lessons
+        ):
+            return None
+        return super().apply_update(db_obj, data)

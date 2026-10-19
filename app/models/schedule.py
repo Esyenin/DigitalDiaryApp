@@ -1,9 +1,10 @@
 """
 Модель занятий в расписании.
 """
-from datetime import time
+from datetime import date, time
 from typing import List
-from sqlalchemy import Boolean, String, Time, false
+from uuid import uuid4
+from sqlalchemy import Boolean, CheckConstraint, Date, Integer, String, Time, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
@@ -23,7 +24,20 @@ class Schedule(Base):
     Имеет связь с базами данных групп и занятий.
     """
 
+    __table_args__ = (
+        UniqueConstraint("series_key", "revision", name="uq_schedule_series_revision"),
+        CheckConstraint(
+            "effective_until IS NULL OR effective_until > effective_from",
+            name="ck_schedule_effective_period",
+        ),
+        CheckConstraint("revision >= 1", name="ck_schedule_revision_positive"),
+    )
+
     # Столбцы модели
+    series_key: Mapped[str] = mapped_column(String(36), default=lambda: str(uuid4()))
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    effective_from: Mapped[date] = mapped_column(Date, default=date(1900, 1, 1))
+    effective_until: Mapped[date | None] = mapped_column(Date, nullable=True)
     odd_or_even: Mapped[str] = mapped_column(String(MAX_LEN["odd_or_even"]))
     type: Mapped[str] = mapped_column(String(MAX_LEN["type"]))
     is_assessment: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())

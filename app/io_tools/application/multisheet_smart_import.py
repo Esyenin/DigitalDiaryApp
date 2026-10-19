@@ -463,6 +463,16 @@ class MultiSheetSmartImporter:
 
         result = MultiSheetSmartImportResult()
 
+        protected = (
+            "schedules", "schedule_group_links", "lessons",
+            "attendances", "marks", "comments",
+        )
+        if any(self._find_sheet_name(workbook, entity) is not None for entity in protected):
+            result.errors.append(
+                "Schedule and lesson sheets require the version-aware repository importer."
+            )
+            return result
+
         found_supported_sheets = []
 
         for entity_type in XLSX_SHEETS_ORDER:

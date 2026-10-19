@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.io_tools import ImportExportService
 from app.io_tools.xlsx_config import normalize_sheet_keys
 import app.services as services_package
-from app.models import Base
+from app.models import Base, Group, Schedule, ScheduleGroupLink, Student
 from app.services.base import BaseService
 
 
@@ -828,6 +828,10 @@ class OrmService:
                 return None
             objects = selected
 
+        if any(self._protected_schedule_target(obj) for obj in objects):
+            self.logger.warning("Use schedule versioning to edit a used schedule.")
+            return None
+
         updated_objects = []
 
         for db_obj in objects:
@@ -875,6 +879,9 @@ class OrmService:
             isinstance(filters, service.model)
             and sa_inspect(filters).persistent
         ):
+            if self._protected_schedule_target(filters):
+                self.logger.warning("Used schedule versions cannot be deleted by the ORM facade.")
+                return None
             try:
                 self.session.delete(filters)
             except SQLAlchemyError:
@@ -895,6 +902,13 @@ class OrmService:
             return 1
 
         filter_data = self._filter_data(filters)
+        if service.model in {Group, Student, Schedule, ScheduleGroupLink}:
+            selected = self._select_objects(service, filter_data)
+            if selected is None or any(
+                self._protected_schedule_target(obj) for obj in selected
+            ):
+                self.logger.warning("Used schedule versions cannot be deleted by the ORM facade.")
+                return None
         stmt = service.build_delete(filter_data)
 
         if stmt is None:
@@ -926,6 +940,26 @@ class OrmService:
             rowcount,
         )
         return rowcount
+
+    @staticmethod
+    def _protected_schedule_target(obj: Base) -> bool:
+        if isinstance(obj, Student):
+            return bool(obj.attendances or obj.marks or obj.comments)
+        if isinstance(obj, Group):
+            return any(
+                link.schedule.effective_until is not None or link.schedule.lessons
+                for link in obj.schedule_links
+            ) or any(
+                student.attendances or student.marks or student.comments
+                for student in obj.students
+            )
+        if isinstance(obj, Schedule):
+            schedule = obj
+        elif isinstance(obj, ScheduleGroupLink):
+            schedule = obj.schedule
+        else:
+            return False
+        return schedule.effective_until is not None or bool(schedule.lessons)
 
     def export_to_xlsx(
         self,
@@ -1011,6 +1045,14 @@ class OrmService:
             for sheet_key in allowed_sheet_keys
             if sheet_key in imported_data
         }
+        protected_sheets = {
+            "schedules", "schedule_group_links", "lessons",
+            "attendances", "marks", "comments",
+        }
+        if any(filtered_data.get(sheet) for sheet in protected_sheets):
+            raise OrmServiceError(
+                "Schedule and lesson data must use the version-aware repository importer."
+            )
         imported_counts: dict[str, int] = {}
 
         for sheet_key, rows in filtered_data.items():

@@ -16,3 +16,9 @@ $env:DIGITAL_DIARY_TEST_DATABASE_URL = 'sqlite:///' + $database.Replace('\', '/'
 For PostgreSQL, create a disposable empty database with a `test_` prefix and
 set the variable to its SQLAlchemy URL. Never point it at an application
 database. The test fixture creates tables but does not remove them afterward.
+
+The schedule migration integration test uses a second explicit URL,
+`DIGITAL_DIARY_SCHEDULE_POSTGRES_URL`. It must identify a separate, empty
+PostgreSQL database whose name begins with `test_`. The test first constructs
+the legacy schema, then migrates and versions it. It leaves that disposable
+database in place for inspection; use a newly created database for each run.

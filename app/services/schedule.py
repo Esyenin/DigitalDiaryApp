@@ -24,3 +24,10 @@ class ScheduleService(BaseService[Schedule]):
     schema_fields = frozenset(
         {"odd_or_even", "type", "is_assessment", "day", "time"}
     )
+
+    def apply_update(self, db_obj, data):
+        if isinstance(db_obj, Schedule) and (
+            db_obj.effective_until is not None or db_obj.lessons
+        ):
+            return None
+        return super().apply_update(db_obj, data)

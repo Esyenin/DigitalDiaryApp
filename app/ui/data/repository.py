@@ -11,6 +11,7 @@ from app.io_tools.application.human_table_import import (
 )
 
 from pydantic import ValidationError
+from openpyxl import load_workbook
 from sqlalchemy import create_engine, delete, event, func, or_, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
@@ -49,6 +50,7 @@ from app.models import (
     Student,
 )
 from app.ui.data.calendar import SemesterSettings, day_index, week_type_for_number
+from app.ui.data.schedule_migration import ensure_schedule_schema
 
 
 class RepositoryError(Exception):
@@ -152,6 +154,7 @@ class DiaryRepository:
         groups, schedules, students, schedule_group_links,
         lessons, attendances, marks, comments.
         """
+        self._reject_legacy_schedule_workbook(Path(file_path), allow_versioned=False)
         result = import_xlsx_with_multisheet_smart_import(file_path)
 
         report_lines: list[str] = []
@@ -183,7 +186,7 @@ class DiaryRepository:
         self.engine = create_engine(DATABASE_URL)
         if DATABASE_URL.startswith("sqlite"):
             event.listen(self.engine, "connect", self._enable_sqlite_foreign_keys)
-        Base.metadata.create_all(bind=self.engine)
+        ensure_schedule_schema(self.engine)
         self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
         self.session: Session = self.session_factory()
         self.import_export_service = ImportExportService()
@@ -328,6 +331,11 @@ class DiaryRepository:
                 weeks=week_offset,
                 days=day_index(schedule.day),
             )
+            if lesson_date < schedule.effective_from or (
+                schedule.effective_until is not None
+                and lesson_date >= schedule.effective_until
+            ):
+                continue
             lesson = self.session.scalar(
                 select(Lesson).where(
                     Lesson.schedule_id == schedule.id,
@@ -428,7 +436,7 @@ class DiaryRepository:
             self._lesson_options(select(Lesson).where(Lesson.id == lesson_id))
         )
 
-    def list_schedules(self) -> list[Schedule]:
+    def list_schedules(self, *, include_history: bool = False) -> list[Schedule]:
         self.refresh()
         stmt = (
             select(Schedule)
@@ -438,6 +446,10 @@ class DiaryRepository:
             )
             .order_by(Schedule.day, Schedule.time)
         )
+        if not include_history:
+            stmt = stmt.where(
+                or_(Schedule.effective_until.is_(None), Schedule.effective_until > date.today())
+            )
         return list(self.session.scalars(stmt).all())
 
     def list_lessons(self) -> list[Lesson]:
@@ -785,6 +797,14 @@ class DiaryRepository:
         self._commit_or_raise("Group was not updated.")
 
     def delete_group(self, group: Group) -> None:
+        if any(
+            link.schedule.effective_until is not None or link.schedule.lessons
+            for link in group.schedule_links
+        ) or any(
+            student.attendances or student.marks or student.comments
+            for student in group.students
+        ):
+            raise RepositoryError("Group has lesson history and cannot be deleted.")
         self.session.delete(group)
         self._commit_or_raise("Group was not deleted.")
 
@@ -837,6 +857,8 @@ class DiaryRepository:
         self._commit_or_raise("Student was not updated.")
 
     def delete_student(self, student: Student) -> None:
+        if student.attendances or student.marks or student.comments:
+            raise RepositoryError("Student has lesson results and cannot be deleted.")
         self.session.delete(student)
         self._commit_or_raise("Student was not deleted.")
 
@@ -850,15 +872,21 @@ class DiaryRepository:
         lesson_type: str,
         is_assessment: bool,
         settings: SemesterSettings,
+        *,
+        effective_from: date | None = None,
     ) -> Schedule:
+        if effective_from is not None and effective_from <= date.today():
+            raise RepositoryError("Choose a future effective date for the schedule.")
         self._ensure_schedule_available(
             groups,
             day,
             lesson_time,
             week_type,
             lesson_type,
+            effective_from=effective_from or date(1900, 1, 1),
         )
         schedule = Schedule(
+            effective_from=effective_from or date(1900, 1, 1),
             odd_or_even=week_type,
             type=lesson_type,
             is_assessment=is_assessment,
@@ -886,7 +914,8 @@ class DiaryRepository:
         settings: SemesterSettings,
         *,
         as_of: date | None = None,
-    ) -> None:
+        effective_from: date | None = None,
+    ) -> Schedule:
         old_group_ids = {link.group_id for link in schedule.group_links}
         new_group_ids = {group.id for group in groups}
         changed = (
@@ -898,64 +927,125 @@ class DiaryRepository:
             or old_group_ids != new_group_ids
         )
         if not changed:
-            return
-        self._reject_protected_schedule(schedule, as_of=as_of)
-        self._ensure_schedule_available(
-            groups,
-            day,
-            lesson_time,
-            week_type,
-            lesson_type,
-            current_schedule_id=schedule.id,
-        )
-        regenerate_lessons = (
-            schedule.day != day or schedule.odd_or_even != week_type
-        )
-        schedule.day = day
-        schedule.time = lesson_time
-        schedule.odd_or_even = week_type
-        schedule.type = lesson_type
-        schedule.is_assessment = is_assessment
-        for link in list(schedule.group_links):
-            if link.group_id not in new_group_ids:
-                self.session.delete(link)
-        for group_id in new_group_ids - old_group_ids:
-            self.session.add(ScheduleGroupLink(group_id=group_id, schedule_id=schedule.id))
-        if regenerate_lessons:
+            return schedule
+        cutoff = as_of or date.today()
+        if effective_from is None or effective_from <= cutoff:
+            raise RepositoryError("Choose a future effective date for schedule changes.")
+        if schedule.effective_until is not None or effective_from <= schedule.effective_from:
+            raise RepositoryError("Only the latest schedule version can be changed.")
+        try:
+            self._lock_schedule_for_edit(schedule, effective_from)
+            if schedule.effective_until is not None:
+                raise RepositoryError("This schedule version has already been changed.")
+            self._reject_conflicting_future_lessons(schedule, effective_from)
+            self._ensure_schedule_available(
+                groups, day, lesson_time, week_type, lesson_type,
+                current_schedule_id=schedule.id, effective_from=effective_from,
+            )
             for lesson in list(schedule.lessons):
-                self.session.delete(lesson)
+                if lesson.date >= effective_from:
+                    self.session.delete(lesson)
             self.session.flush()
-        self.ensure_lessons_for_schedule(schedule, topic, settings)
-        self._commit_or_raise("Schedule template was not updated.")
+            schedule.effective_until = effective_from
+            self.session.flush()
+            next_schedule = Schedule(
+                series_key=schedule.series_key,
+                revision=schedule.revision + 1,
+                effective_from=effective_from,
+                odd_or_even=week_type,
+                type=lesson_type,
+                is_assessment=is_assessment,
+                day=day,
+                time=lesson_time,
+            )
+            self.session.add(next_schedule)
+            self.session.flush()
+            for group_id in new_group_ids:
+                self.session.add(ScheduleGroupLink(group_id=group_id, schedule_id=next_schedule.id))
+            self.ensure_lessons_for_schedule(next_schedule, topic, settings)
+            self._commit_or_raise("Schedule template was not updated.")
+            return next_schedule
+        except RepositoryError:
+            self.session.rollback()
+            raise
+        except SQLAlchemyError as exc:
+            self.session.rollback()
+            raise RepositoryError("Schedule template was not updated.") from exc
 
-    def delete_schedule(self, schedule: Schedule, *, as_of: date | None = None) -> None:
-        self._reject_protected_schedule(schedule, as_of=as_of)
-        self.session.delete(schedule)
-        self._commit_or_raise("Schedule template was not deleted.")
-
-    def _reject_protected_schedule(
-        self, schedule: Schedule, *, as_of: date | None = None
+    def delete_schedule(
+        self,
+        schedule: Schedule,
+        *,
+        as_of: date | None = None,
+        effective_from: date | None = None,
     ) -> None:
         cutoff = as_of or date.today()
-        protected_lesson = self.session.scalar(
-            select(Lesson.id)
+        try:
+            self._lock_schedule_for_edit(schedule, effective_from or cutoff + timedelta(days=1))
+            if schedule.effective_until is not None:
+                raise RepositoryError("This schedule version is already closed.")
+            has_history = self.session.scalar(
+                select(Lesson.id)
+                .where(Lesson.schedule_id == schedule.id, Lesson.date <= cutoff)
+                .limit(1)
+            ) is not None
+            if has_history:
+                if effective_from is None or effective_from <= cutoff:
+                    raise RepositoryError("Choose a future effective date to deactivate this schedule.")
+                self._reject_conflicting_future_lessons(schedule, effective_from)
+                for lesson in list(schedule.lessons):
+                    if lesson.date >= effective_from:
+                        self.session.delete(lesson)
+                self.session.flush()
+                schedule.effective_until = effective_from
+                self._commit_or_raise("Schedule template was not deactivated.")
+            else:
+                self._reject_conflicting_future_lessons(schedule, cutoff + timedelta(days=1))
+                self.session.delete(schedule)
+                self._commit_or_raise("Schedule template was not deleted.")
+        except RepositoryError:
+            self.session.rollback()
+            raise
+        except SQLAlchemyError as exc:
+            self.session.rollback()
+            raise RepositoryError("Schedule template was not deleted.") from exc
+
+    def _reject_conflicting_future_lessons(
+        self, schedule: Schedule, effective_from: date
+    ) -> None:
+        dates = self.session.scalars(
+            select(Lesson.date)
             .where(
                 Lesson.schedule_id == schedule.id,
+                Lesson.date >= effective_from,
                 or_(
-                    Lesson.date <= cutoff,
                     Lesson.topic.is_not(None) & (func.trim(Lesson.topic) != ""),
                     Lesson.attendances.any(),
                     Lesson.marks.any(),
                     Lesson.comments.any(),
                 ),
             )
-            .limit(1)
-        )
-        if protected_lesson is not None:
-            raise RepositoryError(
-                "This schedule has protected lessons. Historical data takes priority; "
-                "editing or deleting this template will be available with future schedule versioning."
+            .order_by(Lesson.date)
+        ).all()
+        if dates:
+            formatted = ", ".join(sorted({item.isoformat() for item in dates}))
+            raise RepositoryError(f"Filled future lessons prevent this change: {formatted}.")
+
+    def _lock_schedule_for_edit(self, schedule: Schedule, effective_from: date) -> None:
+        if self.engine.dialect.name == "sqlite":
+            self.session.execute(
+                text("UPDATE schedules SET id = id WHERE id = :id"), {"id": schedule.id}
             )
+        else:
+            self.session.execute(
+                select(Schedule.id).where(Schedule.id == schedule.id).with_for_update()
+            ).first()
+            self.session.execute(
+                select(Lesson.id)
+                .where(Lesson.schedule_id == schedule.id, Lesson.date >= effective_from)
+                .with_for_update()
+            ).all()
+        self.session.refresh(schedule)
 
     def _commit_or_raise(self, fallback_message: str) -> None:
         try:
@@ -1046,6 +1136,7 @@ class DiaryRepository:
         lesson_type: str,
         *,
         current_schedule_id: int | None = None,
+        effective_from: date | None = None,
     ) -> None:
         selected_group_ids = {group.id for group in groups}
         schedules = self.session.scalars(
@@ -1060,6 +1151,11 @@ class DiaryRepository:
         ).all()
         for schedule in schedules:
             if schedule.id == current_schedule_id:
+                continue
+            if effective_from is not None and (
+                schedule.effective_until is not None
+                and schedule.effective_until <= effective_from
+            ):
                 continue
             group_ids = {link.group_id for link in schedule.group_links}
             if group_ids == selected_group_ids:
@@ -1090,6 +1186,7 @@ class DiaryRepository:
         source_path = Path(file_path)
         if strategy == "smart":
             return self._preview_smart_import(source_path, mode)
+        self._reject_legacy_schedule_workbook(source_path)
         if strategy == "template" or (
                 strategy == "strict" and not sheet_name and not cell_range
         ):
@@ -1125,6 +1222,27 @@ class DiaryRepository:
             warnings=warnings,
             errors=errors,
         )
+
+    @staticmethod
+    def _reject_legacy_schedule_workbook(
+        source_path: Path, *, allow_versioned: bool = True
+    ) -> None:
+        workbook = load_workbook(source_path, read_only=True, data_only=True)
+        try:
+            core = {"odd_or_even", "type", "day", "time"}
+            version = {"series_key", "revision", "effective_from", "effective_until"}
+            for sheet in workbook.worksheets:
+                for values in sheet.iter_rows(values_only=True):
+                    headers = {str(value).strip().lower() for value in values if value is not None}
+                    if core <= headers:
+                        if not allow_versioned or not version <= headers:
+                            raise RepositoryError(
+                                "Schedule import requires versioned columns: "
+                                "series_key, revision, effective_from, effective_until. "
+                                "The legacy format could overwrite lesson history."
+                            )
+        finally:
+            workbook.close()
     def _preview_smart_import(self, source_path: Path, mode: str) -> ImportPreview:
         data: dict[str, list[dict[str, object]]] = {
             entity_type: [] for entity_type in self._smart_entity_types
@@ -1450,7 +1568,26 @@ class DiaryRepository:
         if preview.total_rows == 0:
             raise RepositoryError("The selected import does not contain rows.")
 
+        schedule_sheets = {
+            "schedules", "schedule_group_links", "lessons", "attendances", "marks", "comments"
+        }
+        if any(preview.data.get(name) for name in schedule_sheets):
+            if preview.strategy == "smart" or not preview.data.get("schedules"):
+                raise RepositoryError("Schedule data requires a complete versioned workbook.")
+            for row in preview.data["schedules"]:
+                if any(row.get(field) in (None, "") for field in (
+                    "series_key", "revision", "effective_from"
+                )):
+                    raise RepositoryError("Legacy schedule rows cannot be imported safely.")
+            if any(self.session.scalar(select(model.id).limit(1)) is not None
+                   for model in self._model_by_sheet.values()):
+                raise RepositoryError(
+                    "Versioned schedule data can only be imported into an empty database."
+                )
+
         replace_existing = preview.mode == "replace"
+        if replace_existing and self.session.scalar(select(Lesson.id).limit(1)) is not None:
+            raise RepositoryError("Replacing this database would delete lesson history.")
         imported_counts = {sheet_name: 0 for sheet_name in preview.data}
         imported_ids: dict[str, dict[int, int]] = {
             sheet_name: {} for sheet_name in XLSX_SHEETS_ORDER
@@ -1493,7 +1630,19 @@ class DiaryRepository:
                             )
                     imported_counts[sheet_name] += 1
 
+            for lesson in self.session.scalars(select(Lesson).options(selectinload(Lesson.schedule))):
+                if lesson.date < lesson.schedule.effective_from or (
+                    lesson.schedule.effective_until is not None
+                    and lesson.date >= lesson.schedule.effective_until
+                ):
+                    raise ValueError(
+                        f"Lesson {lesson.id} is outside schedule version period."
+                    )
+
             self.session.commit()
+        except RepositoryError:
+            self.session.rollback()
+            raise
         except IntegrityError as exc:
             self.session.rollback()
             raise RepositoryError(self._integrity_message(exc)) from exc
@@ -1508,12 +1657,19 @@ class DiaryRepository:
         try:
             self._clear_database_in_session()
             self.session.commit()
+        except RepositoryError:
+            self.session.rollback()
+            raise
         except SQLAlchemyError as exc:
             self.session.rollback()
             raise RepositoryError("Database was not cleared.") from exc
         self.session.expire_all()
 
     def _clear_database_in_session(self) -> None:
+        if self.session.scalar(select(Lesson.id).limit(1)) is not None or self.session.scalar(
+            select(Schedule.id).where(Schedule.effective_until.is_not(None)).limit(1)
+        ) is not None:
+            raise RepositoryError("Database contains lesson history; clearing it is not allowed.")
         for model in self._delete_order:
             self.session.execute(delete(model))
         if DATABASE_URL.startswith("sqlite"):
@@ -1584,7 +1740,7 @@ class DiaryRepository:
     ) -> object:
         if value is None:
             return None
-        if column_name in {"id", "group_id", "schedule_id", "student_id", "lesson_id"}:
+        if column_name in {"id", "group_id", "schedule_id", "student_id", "lesson_id", "revision"}:
             return int(value)
         if model is Mark and column_name == "data":
             return int(value)
@@ -1597,7 +1753,7 @@ class DiaryRepository:
             if normalized in {"0", "false", "no", "n", "нет"}:
                 return False
             raise ValueError(f"Invalid boolean value: {value!r}")
-        if column_name == "date":
+        if column_name in {"date", "effective_from", "effective_until"}:
             if isinstance(value, datetime):
                 return value.date()
             if isinstance(value, date):
@@ -1670,10 +1826,8 @@ class DiaryRepository:
         if sheet_name == "schedules":
             return self.session.scalar(
                 select(Schedule).where(
-                    Schedule.day == row.get("day"),
-                    Schedule.time == row.get("time"),
-                    Schedule.odd_or_even == row.get("odd_or_even"),
-                    Schedule.type == row.get("type"),
+                    Schedule.series_key == row.get("series_key"),
+                    Schedule.revision == row.get("revision"),
                 )
             )
         if sheet_name == "schedule_group_links":

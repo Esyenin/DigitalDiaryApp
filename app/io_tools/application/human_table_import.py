@@ -348,7 +348,6 @@ class HumanTableImporter:
         created_count = result.created.get("marks", 0)
 
         lesson = self._get_or_create_default_lesson()
-        self._link_all_groups_to_schedule(lesson.schedule_id)
 
         for row_index, row_data in self._read_table_rows(workbook, table):
             student_text = self._clean_string(row_data.get("student"))
@@ -505,6 +504,7 @@ class HumanTableImporter:
             self.session.add(schedule)
             self.session.flush()
 
+        self._link_all_groups_to_schedule(schedule.id)
         today = date.today()
 
         lesson = self.session.scalar(

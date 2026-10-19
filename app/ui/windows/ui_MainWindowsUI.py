@@ -5,7 +5,7 @@ from html import escape
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QSettings, Qt, QTime
+from PySide6.QtCore import QDate, QSettings, Qt, QTime
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDateEdit,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -577,8 +578,8 @@ class MainWindow(QMainWindow):
         clear_layout(self.ui.settingsScheduleFreeSpace)
         scroll, layout = self._make_scroll_vbox()
         schedules = sorted(
-            self.repository.list_schedules(),
-            key=lambda item: (day_index(item.day), item.time),
+            self.repository.list_schedules(include_history=True),
+            key=lambda item: (day_index(item.day), item.time, item.series_key, item.revision),
         )
         for schedule in schedules:
             card = ScheduleTemplateCard(
@@ -1227,6 +1228,11 @@ class MainWindow(QMainWindow):
         type_input = QComboBox()
         type_input.addItems(["Seminar", "Lab Work", "Control Work"])
         assessment_input = QCheckBox("Assessment lesson")
+        effective_input = QDateEdit()
+        effective_input.setCalendarPopup(True)
+        effective_input.setDisplayFormat("yyyy-MM-dd")
+        effective_input.setMinimumDate(QDate.currentDate().addDays(1))
+        effective_input.setDate(QDate.currentDate().addDays(1))
         group_input = QListWidget()
         group_input.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
 
@@ -1253,6 +1259,7 @@ class MainWindow(QMainWindow):
         form.addRow("Type", type_input)
         form.addRow("", assessment_input)
         form.addRow("Groups", group_input)
+        form.addRow("Effective from", effective_input)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -1274,6 +1281,7 @@ class MainWindow(QMainWindow):
             return
 
         lesson_time = time(time_input.time().hour(), time_input.time().minute())
+        effective_date = effective_input.date().toPython()
         try:
             if schedule is None:
                 self.repository.create_schedule(
@@ -1285,6 +1293,7 @@ class MainWindow(QMainWindow):
                     type_input.currentText(),
                     assessment_input.isChecked(),
                     self.semester_settings,
+                    effective_from=effective_date,
                 )
             else:
                 self.repository.update_schedule(
@@ -1297,6 +1306,7 @@ class MainWindow(QMainWindow):
                     type_input.currentText(),
                     assessment_input.isChecked(),
                     self.semester_settings,
+                    effective_from=effective_date,
                 )
         except RepositoryError as exc:
             QMessageBox.warning(self, "Schedule Template", str(exc))
@@ -1304,9 +1314,26 @@ class MainWindow(QMainWindow):
         self.refresh_all()
 
     def delete_schedule(self, schedule: Schedule) -> None:
-        if self._confirm("Delete schedule template?"):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Deactivate schedule")
+        form = QFormLayout(dialog)
+        effective_input = QDateEdit()
+        effective_input.setCalendarPopup(True)
+        effective_input.setDisplayFormat("yyyy-MM-dd")
+        effective_input.setMinimumDate(QDate.currentDate().addDays(1))
+        effective_input.setDate(QDate.currentDate().addDays(1))
+        form.addRow("Effective from", effective_input)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
             try:
-                self.repository.delete_schedule(schedule)
+                self.repository.delete_schedule(
+                    schedule, effective_from=effective_input.date().toPython()
+                )
             except RepositoryError as exc:
                 QMessageBox.warning(self, "Schedule Template", str(exc))
                 return

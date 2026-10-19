@@ -1,7 +1,7 @@
 """
 Схемы Pydantic для сущности расписания.
 """
-from datetime import datetime
+from datetime import date, datetime
 from datetime import time as time_type
 from typing import Any
 
@@ -51,6 +51,10 @@ class ScheduleCreateSchema(ScheduleBaseSchema):
     is_assessment: bool = False
     day: str = Field(..., min_length=1, max_length=MAX_LEN["day"])
     time: time_type
+    series_key: str | None = None
+    revision: int | None = None
+    effective_from: date | None = None
+    effective_until: date | None = None
 
     @model_validator(mode="before")
     @classmethod
