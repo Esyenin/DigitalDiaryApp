@@ -15,6 +15,16 @@ from app.models.mark import Mark
 from app.models.schedule import Schedule
 from app.models.schedule_group_link import ScheduleGroupLink
 from app.models.student import Student
+from app.models.academic import (
+    AcademicYear, AcademicTerm, Discipline, CourseOffering, CourseOfferingGroup,
+    TeachingModule, AcademicSelection,
+)
+from app.models.education import (
+    AssessmentEvent, AssessmentAttempt, Consultation, ConsultationVisit, LabWork,
+    ChecklistVersion, ChecklistCriterion, CriterionAnswer, ResultCorrection,
+    EventCancellation, AttendanceRevision, NonTeachingDay, LessonDisposition,
+    IndividualPlan, PlanStage, PlanEntry, TeachingAudit,
+)
 
 __all__ = [
     "Base",
@@ -28,4 +38,10 @@ __all__ = [
     "Attendance",
     "Mark",
     "Comment",
+    "AcademicYear", "AcademicTerm", "Discipline", "CourseOffering",
+    "CourseOfferingGroup", "TeachingModule", "AcademicSelection",
+    "AssessmentEvent", "AssessmentAttempt", "Consultation", "ConsultationVisit", "LabWork",
+    "ChecklistVersion", "ChecklistCriterion", "CriterionAnswer", "ResultCorrection",
+    "EventCancellation", "AttendanceRevision", "NonTeachingDay", "LessonDisposition",
+    "IndividualPlan", "PlanStage", "PlanEntry", "TeachingAudit",
 ]

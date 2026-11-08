@@ -983,8 +983,9 @@ class OrmService:
             file_path,
         )
         if model_names is None and any(
-            self.session.scalar(select(model.id).limit(1)) is not None
-            for model in (GroupMembership, LessonParticipant)
+            self.session.scalar(select(table.c.id).limit(1)) is not None
+            for table in Base.metadata.sorted_tables
+            if table.name not in {model.__tablename__ for model in self._services_by_model}
         ):
             raise OrmServiceError(
                 "Full history export requires DiaryRepository.export_to_xlsx."

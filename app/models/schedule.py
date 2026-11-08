@@ -4,7 +4,7 @@
 from datetime import date, time
 from typing import List
 from uuid import uuid4
-from sqlalchemy import Boolean, CheckConstraint, Date, Integer, String, Time, UniqueConstraint, false
+from sqlalchemy import Boolean, CheckConstraint, Date, ForeignKey, Integer, String, Time, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
@@ -43,6 +43,7 @@ class Schedule(Base):
     is_assessment: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     day: Mapped[str] = mapped_column(String(MAX_LEN["day"]))
     time: Mapped[time] = mapped_column(Time)
+    offering_id: Mapped[int | None] = mapped_column(ForeignKey("course_offerings.id", ondelete="RESTRICT"))
 
     # Связи с группами на занятии (One-to-Many)
     group_links: Mapped[List["ScheduleGroupLink"]] = relationship(

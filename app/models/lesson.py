@@ -31,6 +31,7 @@ class Lesson(Base):
     participants_complete: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     roster_origin: Mapped[str] = mapped_column(String(24), default="unfixed", server_default="unfixed")
     roster_completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    roster_time_basis: Mapped[str] = mapped_column(String(24), default="unknown", server_default="unknown")
 
     # Связь с занятием в расписании (Many-to-One)
     schedule: Mapped["Schedule"] = relationship(back_populates="lessons")

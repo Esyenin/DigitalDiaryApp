@@ -55,6 +55,7 @@ class ScheduleCreateSchema(ScheduleBaseSchema):
     revision: int | None = None
     effective_from: date | None = None
     effective_until: date | None = None
+    offering_id: int | None = None
 
     @model_validator(mode="before")
     @classmethod

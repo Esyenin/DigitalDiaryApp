@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
+from uuid import uuid4
 from pathlib import Path
 from app.io_tools.application.multisheet_smart_import import (
     import_xlsx_with_multisheet_smart_import,
@@ -54,6 +55,9 @@ from app.models import (
 from app.ui.data.calendar import SemesterSettings, day_index, week_type_for_number
 from app.ui.data.schedule_migration import ensure_schedule_schema
 from app.ui.data.membership_migration import ensure_membership_schema, set_membership_import_mode
+from app.ui.data.academic_migration import ensure_academic_schema
+from app.services.academic import AcademicService, AcademicError
+from app.services.teaching import TeachingService
 
 
 class RepositoryError(Exception):
@@ -68,6 +72,7 @@ class ImportPreview:
     data: dict[str, list[dict[str, object]]]
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    archive_version: int | None = None
 
     @property
     def row_counts(self) -> dict[str, int]:
@@ -195,11 +200,48 @@ class DiaryRepository:
             event.listen(self.engine, "connect", self._enable_sqlite_foreign_keys)
         ensure_schedule_schema(self.engine)
         ensure_membership_schema(self.engine)
+        ensure_academic_schema(self.engine)
         self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
         self.session: Session = self.session_factory()
         self.import_export_service = ImportExportService()
         self._direct_alias_index = build_direct_alias_index()
         self._reference_alias_index = build_reference_alias_index()
+
+    def academic_action(self, action: str, *args, **kwargs):
+        allowed = {"create_year", "create_term", "create_discipline", "create_offering",
+                   "create_module", "select_term", "close_term", "import_legacy_calendar"}
+        if action not in allowed:
+            raise RepositoryError("Unknown academic operation.")
+        try:
+            result = getattr(AcademicService(self.session), action)(*args, **kwargs)
+            self._commit_or_raise("Academic operation was not saved.")
+            return result
+        except (AcademicError, SQLAlchemyError) as exc:
+            self.session.rollback()
+            raise RepositoryError(str(exc)) from exc
+
+    def academic_calendar(self):
+        return AcademicService(self.session).calendar_settings()
+
+    def teaching_action(self, action: str, **kwargs):
+        allowed = {"create_event", "create_lab", "create_checklist", "record_attempt", "correct_result",
+                   "cancel_event", "create_consultation", "register_visit", "create_plan", "add_plan_stage",
+                   "record_plan_entry", "record_attendance", "set_lesson_disposition", "add_non_teaching_day"}
+        if action not in allowed:
+            raise RepositoryError("Unknown teaching operation.")
+        try:
+            result = getattr(TeachingService(self.session), action)(**kwargs)
+            self._commit_or_raise("Teaching operation was not saved.")
+            return result
+        except (AcademicError, SQLAlchemyError, ValueError) as exc:
+            self.session.rollback()
+            raise RepositoryError(str(exc)) from exc
+
+    def teaching_summary(self, offering_id, student_id, module_id=None):
+        try:
+            return TeachingService(self.session).summary(offering_id, student_id, module_id)
+        except AcademicError as exc:
+            raise RepositoryError(str(exc)) from exc
 
     @staticmethod
     def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
@@ -330,6 +372,13 @@ class DiaryRepository:
         topic: str | None,
         settings: SemesterSettings,
     ) -> None:
+        if schedule.offering_id is not None:
+            from app.models import CourseOffering, AcademicTerm
+            offering = self.session.get(CourseOffering, schedule.offering_id)
+            term = self.session.get(AcademicTerm, offering.term_id)
+            if term.status == "closed":
+                return
+            settings = SemesterSettings(term.start_date, term.total_weeks)
         default_topic = (topic or "").strip() or None
         for week_offset in range(settings.total_weeks):
             week_number = week_offset + 1
@@ -339,6 +388,12 @@ class DiaryRepository:
                 weeks=week_offset,
                 days=day_index(schedule.day),
             )
+            if schedule.offering_id is not None:
+                from app.models import NonTeachingDay
+                if self.session.scalar(select(NonTeachingDay.id).where(
+                    NonTeachingDay.term_id == offering.term_id, NonTeachingDay.date == lesson_date
+                ).limit(1)) is not None:
+                    continue
             if lesson_date < schedule.effective_from or (
                 schedule.effective_until is not None
                 and lesson_date >= schedule.effective_until
@@ -479,8 +534,12 @@ class DiaryRepository:
             .where(Lesson.date >= week_start, Lesson.date <= week_end)
             .order_by(Lesson.date, Schedule.time)
         )
-        if week_type is not None:
-            stmt = stmt.where(Schedule.odd_or_even == week_type)
+        # Generated dates already encode parity; a make-up lesson may be on the other week.
+        from app.models import AcademicSelection, CourseOffering
+        selected = self.session.get(AcademicSelection, 1)
+        if selected is not None:
+            stmt = stmt.where(or_(Schedule.offering_id.is_(None), Schedule.offering_id.in_(
+                select(CourseOffering.id).where(CourseOffering.term_id == selected.term_id))))
         return list(self.session.scalars(stmt).all())
 
     def _lesson_options(self, stmt):
@@ -532,6 +591,8 @@ class DiaryRepository:
             raise RepositoryError("Lesson roll call could not be completed.") from exc
 
     def _complete_lesson_roster(self, lesson: Lesson) -> None:
+        if self.lesson_status(lesson)[0] in {"cancelled", "holiday", "moved"}:
+            raise RepositoryError("Cancelled or replaced lessons cannot complete roll call.")
         if lesson.participants_complete:
             raise RepositoryError("Lesson roll call is already complete.")
         if lesson.date > date.today():
@@ -582,7 +643,8 @@ class DiaryRepository:
             self.session.flush()
             lesson.participants_complete = True
             lesson.roster_origin = "snapshot"
-            lesson.roster_completed_at = datetime.now().astimezone()
+            lesson.roster_completed_at = datetime.now(timezone.utc)
+            lesson.roster_time_basis = "utc"
             self._commit_or_raise("Lesson roll call could not be completed.")
         except SQLAlchemyError as exc:
             self.session.rollback()
@@ -594,6 +656,27 @@ class DiaryRepository:
 
     def lesson_groups_text(self, lesson: Lesson) -> str:
         return self.schedule_groups_text(lesson.schedule)
+
+    def lesson_status(self, lesson: Lesson):
+        from app.models import LessonDisposition
+        disposition = self.session.scalar(select(LessonDisposition).where(
+            LessonDisposition.lesson_id == lesson.id).order_by(LessonDisposition.id.desc()).limit(1))
+        if disposition is not None:
+            return disposition.status, disposition.reason
+        if lesson.participants_complete or lesson.attendances or lesson.marks or lesson.comments:
+            return "held", ""
+        return "scheduled", ""
+
+    def attendance_state(self, lesson, student):
+        from app.models import AttendanceRevision
+        attendance = self.attendance_for(lesson, student)
+        if attendance is None:
+            return "absent", None
+        revision = self.session.scalar(select(AttendanceRevision).where(
+            AttendanceRevision.attendance_id == attendance.id).order_by(AttendanceRevision.id.desc()).limit(1))
+        if revision is not None:
+            return revision.status, revision.late_seconds
+        return ("present" if attendance.is_visited else "absent"), None
 
     def schedule_topic(self, schedule: Schedule) -> str:
         lessons = sorted(schedule.lessons, key=lambda item: item.date)
@@ -654,6 +737,7 @@ class DiaryRepository:
         attended: bool,
         comment_text: str,
         mark_value: int | None,
+        attendance_reason: str | None = None,
     ) -> None:
         if lesson.participants_complete and student.id not in {
             item.student_id for item in lesson.participants
@@ -677,7 +761,17 @@ class DiaryRepository:
                 Attendance.student_id == student.id,
             )
         )
-        if attendance is None:
+        if lesson.date <= date.today() and (attendance is None or attendance.is_visited != attended):
+            try:
+                TeachingService(self.session).record_attendance(
+                    lesson_id=lesson.id, student_id=student.id,
+                    status="present" if attended else "absent",
+                    reason=attendance_reason or "Attendance recorded from lesson page", operation_key=uuid4().hex,
+                )
+            except (AcademicError, SQLAlchemyError) as exc:
+                self.session.rollback()
+                raise RepositoryError(str(exc)) from exc
+        elif attendance is None:
             self.session.add(
                 Attendance(
                     lesson_id=lesson.id,
@@ -740,6 +834,8 @@ class DiaryRepository:
             if attendance is not None and attendance.is_visited:
                 present += 1
         total = len(students)
+        if self.lesson_status(lesson)[0] in {"cancelled", "holiday", "moved"}:
+            return {"total": total, "present": present, "absent": "-", "rate": "-"}
         return {
             "total": total,
             "present": present,
@@ -848,7 +944,7 @@ class DiaryRepository:
         lesson_by_id: dict[int, Lesson] = {}
         for link in group.schedule_links:
             for lesson in link.schedule.lessons:
-                if lesson.date <= date.today():
+                if lesson.date <= date.today() and self.lesson_status(lesson)[0] not in {"cancelled", "holiday", "moved"}:
                     lesson_by_id[lesson.id] = lesson
         return sorted(
             lesson_by_id.values(),
@@ -856,7 +952,8 @@ class DiaryRepository:
         )
 
     def _completed_lessons_for_student(self, student: Student) -> list[Lesson]:
-        return [lesson for lesson in self.lessons_for_student(student) if lesson.date <= date.today()]
+        return [lesson for lesson in self.lessons_for_student(student)
+                if lesson.date <= date.today() and self.lesson_status(lesson)[0] not in {"cancelled", "holiday", "moved"}]
 
     @staticmethod
     def _performance_status(
@@ -1059,7 +1156,26 @@ class DiaryRepository:
         settings: SemesterSettings,
         *,
         effective_from: date | None = None,
+        offering_id: int | None = None,
     ) -> Schedule:
+        course_end = None
+        if offering_id is not None:
+            from app.models import CourseOffering, CourseOfferingGroup
+            offering = self.session.get(CourseOffering, offering_id)
+            if offering is None:
+                raise RepositoryError("Course offering was not found.")
+            try:
+                term = AcademicService(self.session).require_open(offering.term_id)
+            except AcademicError as exc:
+                raise RepositoryError(str(exc)) from exc
+            valid_groups = set(self.session.scalars(select(CourseOfferingGroup.group_id).where(
+                CourseOfferingGroup.offering_id == offering_id)))
+            if not {group.id for group in groups} <= valid_groups:
+                raise RepositoryError("Schedule groups must belong to the course offering.")
+            settings = SemesterSettings(term.start_date, term.total_weeks)
+            course_end = term.start_date + timedelta(weeks=term.total_weeks)
+            if effective_from is not None and not term.start_date <= effective_from < course_end:
+                raise RepositoryError("Schedule start must be inside its academic term.")
         if effective_from is not None and effective_from <= date.today():
             raise RepositoryError("Choose a future effective date for the schedule.")
         self._ensure_schedule_available(
@@ -1069,8 +1185,10 @@ class DiaryRepository:
             week_type,
             lesson_type,
             effective_from=effective_from or date(1900, 1, 1),
+            effective_until=course_end,
         )
         schedule = Schedule(
+            offering_id=offering_id,
             effective_from=effective_from or date(1900, 1, 1),
             odd_or_even=week_type,
             type=lesson_type,
@@ -1103,6 +1221,21 @@ class DiaryRepository:
     ) -> Schedule:
         old_group_ids = {link.group_id for link in schedule.group_links}
         new_group_ids = {group.id for group in groups}
+        course_end = None
+        if schedule.offering_id is not None:
+            from app.models import CourseOffering, CourseOfferingGroup
+            offering = self.session.get(CourseOffering, schedule.offering_id)
+            try:
+                term = AcademicService(self.session).require_open(offering.term_id)
+            except AcademicError as exc:
+                raise RepositoryError(str(exc)) from exc
+            course_end = term.start_date + timedelta(weeks=term.total_weeks)
+            if effective_from is not None and not term.start_date <= effective_from < course_end:
+                raise RepositoryError("Version switch must be inside its academic term.")
+            valid_groups = set(self.session.scalars(select(CourseOfferingGroup.group_id).where(
+                CourseOfferingGroup.offering_id == offering.id)))
+            if not new_group_ids <= valid_groups:
+                raise RepositoryError("Schedule groups must belong to the course offering.")
         changed = (
             schedule.day != day
             or schedule.time != lesson_time
@@ -1126,6 +1259,7 @@ class DiaryRepository:
             self._ensure_schedule_available(
                 groups, day, lesson_time, week_type, lesson_type,
                 current_schedule_id=schedule.id, effective_from=effective_from,
+                effective_until=course_end,
             )
             for lesson in list(schedule.lessons):
                 if lesson.date >= effective_from:
@@ -1135,6 +1269,7 @@ class DiaryRepository:
             self.session.flush()
             next_schedule = Schedule(
                 series_key=schedule.series_key,
+                offering_id=schedule.offering_id,
                 revision=schedule.revision + 1,
                 effective_from=effective_from,
                 odd_or_even=week_type,
@@ -1198,6 +1333,7 @@ class DiaryRepository:
     def _reject_conflicting_future_lessons(
         self, schedule: Schedule, effective_from: date
     ) -> None:
+        from app.models import AssessmentEvent, LessonDisposition
         dates = self.session.scalars(
             select(Lesson.date)
             .where(
@@ -1208,6 +1344,10 @@ class DiaryRepository:
                     Lesson.attendances.any(),
                     Lesson.marks.any(),
                     Lesson.comments.any(),
+                    Lesson.participants.any(),
+                    Lesson.participants_complete,
+                    select(AssessmentEvent.id).where(AssessmentEvent.lesson_id == Lesson.id).exists(),
+                    select(LessonDisposition.id).where(LessonDisposition.lesson_id == Lesson.id).exists(),
                 ),
             )
             .order_by(Lesson.date)
@@ -1328,6 +1468,7 @@ class DiaryRepository:
         *,
         current_schedule_id: int | None = None,
         effective_from: date | None = None,
+        effective_until: date | None = None,
     ) -> None:
         selected_group_ids = {group.id for group in groups}
         schedules = self.session.scalars(
@@ -1343,6 +1484,14 @@ class DiaryRepository:
         for schedule in schedules:
             if schedule.id == current_schedule_id:
                 continue
+            if effective_until is not None and schedule.effective_from >= effective_until:
+                continue
+            if schedule.offering_id is not None and effective_from is not None:
+                from app.models import CourseOffering, AcademicTerm
+                course = self.session.get(CourseOffering, schedule.offering_id)
+                term = self.session.get(AcademicTerm, course.term_id)
+                if term.start_date + timedelta(weeks=term.total_weeks) <= effective_from:
+                    continue
             if effective_from is not None and (
                 schedule.effective_until is not None
                 and schedule.effective_until <= effective_from
@@ -1356,6 +1505,14 @@ class DiaryRepository:
 
     def export_to_xlsx(self, file_path: str | Path) -> Path:
         self.refresh()
+        old_tables = {model.__table__.name for model in self._model_by_sheet.values()}
+        if any(self.session.scalar(select(table.c.id).limit(1)) is not None
+               for table in Base.metadata.sorted_tables if table.name not in old_tables):
+            from app.ui.data.teaching_archive import export_archive
+            try:
+                return export_archive(self.session, file_path)
+            except (ValueError, SQLAlchemyError) as exc:
+                raise RepositoryError(str(exc)) from exc
         payload = {
             sheet_name: self.session.scalars(
                 select(model).order_by(model.id)
@@ -1377,6 +1534,17 @@ class DiaryRepository:
         source_path = Path(file_path)
         if strategy == "smart":
             return self._preview_smart_import(source_path, mode)
+        from app.ui.data.teaching_archive import preview_archive
+        try:
+            archive = preview_archive(source_path)
+        except (ValueError, TypeError) as exc:
+            raise RepositoryError(str(exc)) from exc
+        if archive is not None:
+            if strategy != "standard":
+                raise RepositoryError("Full teaching archives require Standard import into an empty database.")
+            aliases = {model.__table__.name: name for name, model in self._model_by_sheet.items()}
+            return ImportPreview(source_path, strategy, mode,
+                {aliases.get(table, table): rows for table, rows in archive.items()}, archive_version=1)
         self._reject_legacy_schedule_workbook(source_path)
         if strategy == "template" or (
                 strategy == "strict" and not sheet_name and not cell_range
@@ -1760,6 +1928,16 @@ class DiaryRepository:
             raise RepositoryError(preview.errors[0])
         if preview.total_rows == 0:
             raise RepositoryError("The selected import does not contain rows.")
+        if preview.archive_version is not None:
+            if preview.archive_version != 1 or preview.strategy != "standard":
+                raise RepositoryError("Unsupported teaching archive import.")
+            from app.ui.data.teaching_archive import restore_archive
+            names = {name: model.__table__.name for name, model in self._model_by_sheet.items()}
+            try:
+                return restore_archive(self, {names.get(name, name): rows for name, rows in preview.data.items()})
+            except (ValueError, TypeError, SQLAlchemyError) as exc:
+                self.session.rollback()
+                raise RepositoryError(str(exc)) from exc
 
         history_sheets = ("group_memberships", "lesson_participants")
         history_restore = any(name in preview.data for name in history_sheets)

@@ -41,6 +41,8 @@ def _add_missing_columns(connection) -> None:
 
 def _sqlite_guards(connection) -> None:
     connection.exec_driver_sql("DROP TRIGGER IF EXISTS lesson_roster_guard")
+    for name in ("student_membership_insert", "student_group_update", "student_status_update", "group_archive_guard"):
+        connection.exec_driver_sql(f"DROP TRIGGER IF EXISTS {name}")
     connection.exec_driver_sql("""
         CREATE TRIGGER IF NOT EXISTS membership_overlap_insert
         BEFORE INSERT ON groupmemberships BEGIN
@@ -75,7 +77,7 @@ def _sqlite_guards(connection) -> None:
         CREATE TRIGGER IF NOT EXISTS student_membership_insert
         AFTER INSERT ON students BEGIN
         INSERT INTO groupmemberships (student_id, group_id, start_date, origin, known_from)
-        VALUES (NEW.id, NEW.group_id, date('now'), 'recorded', date('now'));
+        VALUES (NEW.id, NEW.group_id, date('now','localtime'), 'recorded', date('now','localtime'));
         END
     """)
     connection.exec_driver_sql("""
@@ -83,7 +85,7 @@ def _sqlite_guards(connection) -> None:
         BEFORE UPDATE OF group_id ON students WHEN NEW.group_id != OLD.group_id BEGIN
         SELECT RAISE(ABORT, 'transfer requires a membership period') WHERE NOT EXISTS (
           SELECT 1 FROM groupmemberships WHERE student_id = OLD.id
-          AND group_id = NEW.group_id AND start_date <= date('now') AND end_date IS NULL);
+          AND group_id = NEW.group_id AND start_date <= date('now','localtime') AND end_date IS NULL);
         SELECT RAISE(ABORT, 'cannot transfer to an archived group') WHERE EXISTS (
           SELECT 1 FROM groups WHERE id = NEW.group_id AND is_archived = 1);
         END
@@ -104,7 +106,7 @@ def _sqlite_guards(connection) -> None:
           NEW.status = 'active' AND NEW.archived_at IS NOT NULL;
         SELECT RAISE(ABORT, 'archive requires closing membership') WHERE
           NEW.status = 'archived' AND (
-            NEW.archived_at IS NULL OR NEW.archived_at > date('now')
+            NEW.archived_at IS NULL OR NEW.archived_at > date('now','localtime')
             OR COALESCE(TRIM(NEW.archive_reason), '') = '' OR EXISTS (
               SELECT 1 FROM groupmemberships WHERE student_id = OLD.id AND end_date IS NULL
             )
@@ -130,7 +132,7 @@ def _sqlite_guards(connection) -> None:
           SELECT 1 FROM schedulegrouplinks AS link
           JOIN schedules AS schedule ON schedule.id = link.schedule_id
           WHERE link.group_id = OLD.id AND (
-            schedule.effective_until IS NULL OR schedule.effective_until > date('now')
+            schedule.effective_until IS NULL OR schedule.effective_until > date('now','localtime')
           )
         );
         END

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -142,6 +143,9 @@ class MainWindow(QMainWindow):
         self._sync_nav_state()
 
     def _load_semester_settings(self) -> SemesterSettings:
+        stored = self.repository.academic_calendar()
+        if stored is not None:
+            return stored
         start_text = self.settings_store.value("semester/start_date", "")
         weeks_text = self.settings_store.value("semester/total_weeks", "")
         try:
@@ -150,8 +154,8 @@ class MainWindow(QMainWindow):
             if start_date.weekday() != 0:
                 raise ValueError
         except (TypeError, ValueError):
-            return SemesterSettings(DEFAULT_SEMESTER_START, DEFAULT_SEMESTER_WEEKS)
-        return SemesterSettings(start_date, total_weeks)
+            start_date, total_weeks = DEFAULT_SEMESTER_START, DEFAULT_SEMESTER_WEEKS
+        return self.repository.academic_action("import_legacy_calendar", SemesterSettings(start_date, total_weeks))
 
     def _save_semester_settings(self) -> None:
         self.settings_store.setValue(
@@ -181,6 +185,34 @@ class MainWindow(QMainWindow):
         self.ui.menu.addAction(self.ui.action_3)
         self.ui.menu.addSeparator()
         self.ui.menu.addAction(self.ui.action_4)
+        academic_action = self.ui.menu.addAction("Academic structure...")
+        academic_action.triggered.connect(self.show_academic_workspace)
+        teaching_action = self.ui.menu.addAction("Teaching process...")
+        teaching_action.triggered.connect(lambda: self.show_teaching_workspace())
+
+    def show_academic_workspace(self):
+        from app.ui.windows.academic_workspace import AcademicWorkspace
+        self._push_current_route()
+        self._show_detail_page(AcademicWorkspace(self))
+        self.current_route = ("academic", None)
+
+    def show_teaching_workspace(self, *, offering_id=None, student_id=None, lesson_id=None, push_history=True):
+        from app.ui.windows.teaching_workspace import TeachingWorkspace
+        if push_history:
+            self._push_current_route()
+        self._show_detail_page(TeachingWorkspace(self, offering_id=offering_id,
+                                               student_id=student_id, lesson_id=lesson_id))
+        self.current_route = ("teaching", (offering_id, student_id, lesson_id))
+
+    def show_attendance_editor(self, lesson, student):
+        from app.ui.windows.teaching_workspace import TeachingWorkspace
+        workspace = TeachingWorkspace(self, offering_id=lesson.schedule.offering_id,
+                                      student_id=student.id, lesson_id=lesson.id)
+        try:
+            workspace.open_attendance_dialog(lesson.id, student.id)
+        finally:
+            workspace.deleteLater()
+        self.show_lesson_detail(lesson, push_history=False)
 
     def _configure_inputs(self) -> None:
         self._replace_semester_text_edits()
@@ -470,7 +502,17 @@ class MainWindow(QMainWindow):
             )
             return
 
+        stored = self.repository.academic_calendar()
+        if stored is not None and stored != SemesterSettings(start_date, total_weeks):
+            QMessageBox.warning(self, "Semester settings", "Create or select a new term in Academic structure.")
+            return
         self.semester_settings = SemesterSettings(start_date, total_weeks)
+        if stored is None:
+            try:
+                self.repository.academic_action("import_legacy_calendar", self.semester_settings)
+            except RepositoryError as exc:
+                QMessageBox.warning(self, "Semester settings", str(exc))
+                return
         self._save_semester_settings()
         self.selected_week_start = clamp_week_start(
             self.selected_week_start,
@@ -544,6 +586,17 @@ class MainWindow(QMainWindow):
             day_layout.setContentsMargins(0, 0, 0, 0)
             day_layout.setSpacing(14)
             day_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+            from sqlalchemy import select
+            from app.models import AcademicSelection, NonTeachingDay
+            selection = self.repository.session.get(AcademicSelection, 1)
+            if selection is not None:
+                holiday = self.repository.session.scalar(select(NonTeachingDay).where(
+                    NonTeachingDay.term_id == selection.term_id,
+                    NonTeachingDay.date == self.selected_week_start + timedelta(days=column)))
+                if holiday is not None:
+                    holiday_label = QLabel(f"Non-teaching day: {holiday.reason}")
+                    holiday_label.setWordWrap(True)
+                    day_layout.addWidget(holiday_label)
 
             day_lessons = sorted(
                 lessons_by_day[column],
@@ -552,6 +605,10 @@ class MainWindow(QMainWindow):
             if day_lessons:
                 for lesson in day_lessons:
                     card = LessonCard(lesson, self.repository.lesson_groups_text(lesson))
+                    state, reason = self.repository.lesson_status(lesson)
+                    if state != "scheduled":
+                        card.type_label.setText(f"{lesson.schedule.type} / {state}")
+                    card.setToolTip(reason)
                     card.clicked.connect(self.show_lesson_detail)
                     card.group_clicked.connect(self.show_group_detail)
                     day_layout.addWidget(card)
@@ -683,6 +740,16 @@ class MainWindow(QMainWindow):
 
     def _restore_route(self, route: tuple[str, object | None]) -> None:
         route_type, route_value = route
+        if route_type == "teaching":
+            offering_id, student_id, lesson_id = route_value or (None, None, None)
+            self.show_teaching_workspace(offering_id=offering_id, student_id=student_id,
+                                         lesson_id=lesson_id, push_history=False)
+            return
+        if route_type == "academic":
+            from app.ui.windows.academic_workspace import AcademicWorkspace
+            self._show_detail_page(AcademicWorkspace(self))
+            self.current_route = route
+            return
         if route_type == "lesson" and route_value is not None:
             lesson = self.repository.get_lesson(int(route_value))
             if lesson is not None:
@@ -766,15 +833,24 @@ class MainWindow(QMainWindow):
         header_layout.addLayout(top)
         header_layout.addWidget(meta)
         header_layout.addWidget(groups)
+        state, state_reason = self.repository.lesson_status(lesson)
+        state_label = QLabel(state.title() + (f": {state_reason}" if state_reason else ""))
+        state_label.setWordWrap(True)
+        header_layout.addWidget(state_label)
+        teaching_button = QPushButton("Assessments and teaching records")
+        teaching_button.clicked.connect(lambda checked=False: self.show_teaching_workspace(
+            offering_id=lesson.schedule.offering_id, lesson_id=lesson.id))
+        header_layout.addWidget(teaching_button, alignment=Qt.AlignmentFlag.AlignLeft)
         if lesson.participants_complete:
             completed = QLabel(
                 "Roll call completed"
                 + (f" at {lesson.roster_completed_at:%Y-%m-%d %H:%M}"
+                   + (" UTC" if lesson.roster_time_basis == "utc" else " (timezone unknown)")
                    if lesson.roster_completed_at else " (time not recorded)")
             )
             completed.setObjectName("DetailMeta")
             header_layout.addWidget(completed)
-        elif lesson.roster_origin == "unfixed" and lesson.date <= date.today():
+        elif lesson.roster_origin == "unfixed" and lesson.date <= date.today() and state not in {"cancelled", "holiday", "moved"}:
             finish_button = QPushButton("Complete roll call")
             finish_button.clicked.connect(
                 lambda checked=False, current=lesson: self.complete_lesson_roll_call(current)
@@ -798,7 +874,7 @@ class MainWindow(QMainWindow):
         table_layout = table.layout()
         table_layout.addWidget(
             make_table_row(
-                ["Student Name", "Group", "Attendance", "Comment", "Score", "Actions"],
+                ["Student Name", "Group", "Attendance", "Comment", "Legacy score", "Actions"],
                 "TableHeader",
             )
         )
@@ -1017,6 +1093,9 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(title)
         header_layout.addWidget(group_link)
         header_layout.addWidget(email)
+        results_button = QPushButton("Discipline results and debts")
+        results_button.clicked.connect(lambda checked=False: self.show_teaching_workspace(student_id=student.id))
+        header_layout.addWidget(results_button, alignment=Qt.AlignmentFlag.AlignLeft)
         if student.status == "active":
             actions = QHBoxLayout()
             transfer_button = QPushButton("Transfer")
@@ -1087,12 +1166,21 @@ class MainWindow(QMainWindow):
             lambda checked=False, current=student: self.show_student_detail(current)
         )
 
-        group_button = make_link_button(student.group.name)
-        group_button.clicked.connect(
-            lambda checked=False, current=student.group: self.show_group_detail(current)
-        )
+        participant = next((item for item in lesson.participants if item.student_id == student.id), None)
+        historical_group = self.repository.session.get(Group, participant.group_id) if participant and participant.group_id else None
+        if historical_group is None and not lesson.participants_complete:
+            matches = [membership.group for membership in student.memberships
+                       if membership.start_date <= lesson.date
+                       and (membership.end_date is None or membership.end_date > lesson.date)
+                       and membership.known_from <= lesson.date]
+            historical_group = matches[0] if len(matches) == 1 else None
+        group_button = make_link_button(historical_group.name if historical_group else "Unknown group")
+        group_button.setEnabled(historical_group is not None)
+        if historical_group is not None:
+            group_button.clicked.connect(lambda checked=False, current=historical_group: self.show_group_detail(current))
 
-        attendance_input = QCheckBox("Present")
+        status, late_seconds = self.repository.attendance_state(lesson, student)
+        attendance_input = QCheckBox(status.title() + (f" ({late_seconds // 60} min)" if late_seconds else ""))
         attendance_input.setObjectName("InlineCheckBox")
         attendance_input.setChecked(attendance is not None and attendance.is_visited)
 
@@ -1118,6 +1206,9 @@ class MainWindow(QMainWindow):
             lambda checked=False, current=student: self.show_student_detail(current)
         )
         actions_layout.addWidget(profile_button)
+        attendance_button = make_link_button("Attendance history")
+        attendance_button.clicked.connect(lambda checked=False: self.show_attendance_editor(lesson, student))
+        actions_layout.addWidget(attendance_button)
 
         save_current_row = (
             lambda *args, current_lesson=lesson, current_student=student: (
@@ -1188,12 +1279,22 @@ class MainWindow(QMainWindow):
                     return
 
         try:
+            attendance_reason = None
+            old = self.repository.attendance_for(lesson, student)
+            if old is not None and old.is_visited != attendance_input.isChecked():
+                attendance_reason, accepted = QInputDialog.getText(self, "Attendance correction", "Reason")
+                if not accepted or not attendance_reason.strip():
+                    attendance_input.blockSignals(True)
+                    attendance_input.setChecked(old.is_visited)
+                    attendance_input.blockSignals(False)
+                    return
             self.repository.save_lesson_student_record(
                 lesson,
                 student,
                 attended=attendance_input.isChecked(),
                 comment_text=comment_input.text(),
                 mark_value=mark_value,
+                attendance_reason=attendance_reason,
             )
         except RepositoryError as exc:
             QMessageBox.warning(self, "Lesson", str(exc))
@@ -1302,6 +1403,15 @@ class MainWindow(QMainWindow):
         form = QFormLayout(dialog)
 
         day_input = QComboBox()
+        course_input = QComboBox()
+        course_input.addItem("Legacy / unassigned", None)
+        from sqlalchemy import select
+        from app.models import CourseOffering
+        for course in self.repository.session.scalars(select(CourseOffering).order_by(CourseOffering.id)):
+            course_input.addItem(f"{course.id}: {course.name}", course.id)
+        if schedule is not None:
+            course_input.setCurrentIndex(max(0, course_input.findData(schedule.offering_id)))
+            course_input.setEnabled(False)
         day_input.addItems(DAY_NAMES)
         time_input = QTimeEdit()
         time_input.setDisplayFormat("HH:mm")
@@ -1336,6 +1446,7 @@ class MainWindow(QMainWindow):
             group_input.addItem(item)
 
         form.addRow("Day", day_input)
+        form.addRow("Course", course_input)
         form.addRow("Time", time_input)
         form.addRow("Week", week_input)
         form.addRow("Type", type_input)
@@ -1376,6 +1487,7 @@ class MainWindow(QMainWindow):
                     assessment_input.isChecked(),
                     self.semester_settings,
                     effective_from=effective_date,
+                    offering_id=course_input.currentData(),
                 )
             else:
                 self.repository.update_schedule(

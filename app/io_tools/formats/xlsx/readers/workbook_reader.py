@@ -230,7 +230,14 @@ class StandardWorkbookReader:
             return
 
         expected_headers = tuple(XLSX_COLUMNS_BY_SHEET.get(sheet_name, ()))
-        if headers != expected_headers:
+        supported_headers = {expected_headers}
+        legacy_fields = {
+            "schedules": (("offering_id",),),
+            "lessons": (("roster_time_basis",), ("roster_time_basis", "roster_completed_at")),
+        }
+        for omitted in legacy_fields.get(sheet_name, ()):
+            supported_headers.add(tuple(name for name in expected_headers if name not in omitted))
+        if headers not in supported_headers:
             result.add_error(
                 f"Лист {sheet_name} не соответствует стандартному формату экспорта. "
                 f"Ожидались колонки: {', '.join(expected_headers)}. "
