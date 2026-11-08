@@ -53,7 +53,7 @@ def _legacy_database(path):
         for table, columns in (
             ("students", ("status", "archived_at", "archive_reason")),
             ("groups", ("is_archived", "archive_reason")),
-            ("lessons", ("participants_complete", "roster_origin")),
+            ("lessons", ("participants_complete", "roster_origin", "roster_completed_at")),
         ):
             for column in columns:
                 connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
@@ -79,6 +79,9 @@ def test_membership_migration_preserves_ids_and_marks_uncertainty(tmp_path):
             assert connection.execute(text(
                 "SELECT participants_complete, roster_origin FROM lessons WHERE id=99"
             )).one() == (0, "legacy_unknown")
+            assert connection.execute(text(
+                "SELECT roster_completed_at FROM lessons WHERE id=99"
+            )).scalar_one() is None
             for table, row_id, value in (
                 ("students", 20, "Ivanov"), ("groups", 7, "IU7-11"),
                 ("lessons", 99, "History"), ("marks", 101, 87),

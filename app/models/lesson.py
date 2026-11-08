@@ -1,9 +1,9 @@
 """
 Модель конкретных занятий в течение года.
 """
-from datetime import date
+from datetime import date, datetime
 from typing import List, Optional
-from sqlalchemy import Boolean, Date, ForeignKey, String, UniqueConstraint, false
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, String, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
@@ -30,6 +30,7 @@ class Lesson(Base):
     date: Mapped[date] = mapped_column(Date)
     participants_complete: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     roster_origin: Mapped[str] = mapped_column(String(24), default="unfixed", server_default="unfixed")
+    roster_completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Связь с занятием в расписании (Many-to-One)
     schedule: Mapped["Schedule"] = relationship(back_populates="lessons")

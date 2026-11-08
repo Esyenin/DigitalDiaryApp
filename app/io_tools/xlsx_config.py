@@ -80,6 +80,7 @@ XLSX_COLUMNS_BY_SHEET = {
         "date",
         "participants_complete",
         "roster_origin",
+        "roster_completed_at",
         "created_at",
         "updated_at",
     ),

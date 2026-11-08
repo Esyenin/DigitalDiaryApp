@@ -495,34 +495,14 @@ class DiaryRepository:
         )
 
     def students_for_lesson(self, lesson: Lesson) -> list[Student]:
-        if lesson.roster_origin == "unfixed" and lesson.date <= date.today():
-            group_ids = {link.group_id for link in lesson.schedule.group_links}
-            memberships = self.session.scalars(select(GroupMembership).where(
-                GroupMembership.group_id.in_(group_ids),
-                GroupMembership.start_date <= lesson.date,
-                GroupMembership.known_from <= lesson.date,
-                or_(GroupMembership.end_date.is_(None), GroupMembership.end_date > lesson.date),
-            )).all() if group_ids else []
-            if memberships:
-                existing_ids = {item.student_id for item in lesson.participants}
-                for membership in memberships:
-                    if membership.student_id not in existing_ids:
-                        self.session.add(LessonParticipant(
-                            lesson_id=lesson.id, student_id=membership.student_id,
-                            group_id=membership.group_id, source="snapshot"
-                        ))
-                self.session.flush()
-                lesson.participants_complete = True
-                lesson.roster_origin = "snapshot"
-                self._commit_or_raise("Lesson participants could not be fixed.")
         ids = {item.student_id for item in lesson.participants}
-        if lesson.roster_origin == "unfixed" and lesson.date > date.today():
+        if lesson.roster_origin == "unfixed":
             group_ids = {link.group_id for link in lesson.schedule.group_links}
             if group_ids:
                 ids.update(self.session.scalars(select(GroupMembership.student_id).where(
                     GroupMembership.group_id.in_(group_ids),
                     GroupMembership.start_date <= lesson.date,
-                    GroupMembership.known_from <= date.today(),
+                    GroupMembership.known_from <= min(lesson.date, date.today()),
                     or_(GroupMembership.end_date.is_(None), GroupMembership.end_date > lesson.date),
                 )).all())
         if not lesson.participants_complete:
@@ -534,6 +514,79 @@ class DiaryRepository:
             (student for student in students if student is not None),
             key=lambda item: (item.surname, item.first_name),
         )
+
+    def complete_lesson_roster(self, lesson: Lesson) -> None:
+        try:
+            if self.engine.dialect.name == "sqlite":
+                self.session.execute(text("UPDATE lessons SET id = id WHERE id = :id"), {"id": lesson.id})
+            else:
+                self.session.execute(select(Lesson.id).where(Lesson.id == lesson.id).with_for_update()).first()
+                self.session.execute(text("LOCK TABLE groupmemberships IN SHARE MODE"))
+            self.session.refresh(lesson)
+            self.session.expire(lesson, ["participants", "attendances", "marks", "comments"])
+            self._complete_lesson_roster(lesson)
+        except (RepositoryError, SQLAlchemyError) as exc:
+            self.session.rollback()
+            if isinstance(exc, RepositoryError):
+                raise
+            raise RepositoryError("Lesson roll call could not be completed.") from exc
+
+    def _complete_lesson_roster(self, lesson: Lesson) -> None:
+        if lesson.participants_complete:
+            raise RepositoryError("Lesson roll call is already complete.")
+        if lesson.date > date.today():
+            raise RepositoryError("A future lesson's roll call cannot be completed.")
+        if lesson.roster_origin != "unfixed":
+            raise RepositoryError("The historical roster is uncertain and cannot be completed automatically.")
+        group_ids = {link.group_id for link in lesson.schedule.group_links}
+        if not group_ids:
+            raise RepositoryError("The lesson has no groups.")
+        ambiguous = self.session.scalar(select(GroupMembership.id).where(
+            GroupMembership.student_id.in_(
+                select(GroupMembership.student_id).where(
+                    GroupMembership.group_id.in_(group_ids),
+                    GroupMembership.start_date <= lesson.date,
+                    or_(GroupMembership.end_date.is_(None), GroupMembership.end_date >= lesson.date),
+                )
+            ),
+            GroupMembership.end_date == lesson.date,
+        ).limit(1))
+        if ambiguous is not None:
+            raise RepositoryError(
+                "A same-day group transfer cannot be ordered relative to this lesson; "
+                "the roster needs an explicit resolution."
+            )
+        memberships = self.session.scalars(select(GroupMembership).where(
+            GroupMembership.group_id.in_(group_ids),
+            GroupMembership.start_date <= lesson.date,
+            or_(GroupMembership.end_date.is_(None), GroupMembership.end_date > lesson.date),
+        )).all()
+        if any(item.origin == "migrated_unknown" or item.known_from > lesson.date for item in memberships):
+            raise RepositoryError("Migrated membership dates cannot prove a complete historical roster.")
+        existing = {item.student_id for item in lesson.participants}
+        try:
+            evidence_ids = {item.student_id for item in lesson.attendances}
+            evidence_ids.update(item.student_id for item in lesson.marks)
+            evidence_ids.update(item.student_id for item in lesson.comments)
+            membership_by_student = {item.student_id: item for item in memberships}
+            for student_id in evidence_ids - existing - membership_by_student.keys():
+                self.session.add(LessonParticipant(
+                    lesson_id=lesson.id, student_id=student_id, group_id=None, source="evidence",
+                ))
+            for membership in memberships:
+                if membership.student_id not in existing:
+                    self.session.add(LessonParticipant(
+                        lesson_id=lesson.id, student_id=membership.student_id,
+                        group_id=membership.group_id, source="snapshot",
+                    ))
+            self.session.flush()
+            lesson.participants_complete = True
+            lesson.roster_origin = "snapshot"
+            lesson.roster_completed_at = datetime.now().astimezone()
+            self._commit_or_raise("Lesson roll call could not be completed.")
+        except SQLAlchemyError as exc:
+            self.session.rollback()
+            raise RepositoryError("Lesson roll call could not be completed.") from exc
 
     def schedule_groups_text(self, schedule: Schedule) -> str:
         names = [link.group.name for link in schedule.group_links]
@@ -1991,7 +2044,7 @@ class DiaryRepository:
                 except ValueError:
                     continue
             raise ValueError(f"Invalid time value: {value!r}")
-        if column_name in {"created_at", "updated_at"}:
+        if column_name in {"created_at", "updated_at", "roster_completed_at"}:
             if isinstance(value, datetime):
                 return value
             return datetime.fromisoformat(str(value).strip())

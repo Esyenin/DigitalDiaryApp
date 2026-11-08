@@ -766,6 +766,20 @@ class MainWindow(QMainWindow):
         header_layout.addLayout(top)
         header_layout.addWidget(meta)
         header_layout.addWidget(groups)
+        if lesson.participants_complete:
+            completed = QLabel(
+                "Roll call completed"
+                + (f" at {lesson.roster_completed_at:%Y-%m-%d %H:%M}"
+                   if lesson.roster_completed_at else " (time not recorded)")
+            )
+            completed.setObjectName("DetailMeta")
+            header_layout.addWidget(completed)
+        elif lesson.roster_origin == "unfixed" and lesson.date <= date.today():
+            finish_button = QPushButton("Complete roll call")
+            finish_button.clicked.connect(
+                lambda checked=False, current=lesson: self.complete_lesson_roll_call(current)
+            )
+            header_layout.addWidget(finish_button, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(header)
 
         summary = self.repository.lesson_attendance_summary(lesson)
@@ -1231,6 +1245,23 @@ class MainWindow(QMainWindow):
         self.ui.mainWidget.addWidget(scroll)
         self.ui.mainWidget.setCurrentWidget(scroll)
         self._sync_nav_state()
+
+    def complete_lesson_roll_call(self, lesson: Lesson) -> None:
+        answer = QMessageBox.question(
+            self, "Complete roll call",
+            "Fix this lesson's student roster? It cannot be changed afterward.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.repository.complete_lesson_roster(lesson)
+        except RepositoryError as exc:
+            QMessageBox.warning(self, "Complete roll call", str(exc))
+            return
+        self.refresh_all()
+        current = self.repository.get_lesson(lesson.id)
+        if current is not None:
+            self.show_lesson_detail(current, push_history=False)
 
     def show_lesson_topic_dialog(self, lesson: Lesson) -> None:
         current_lesson = self.repository.get_lesson(lesson.id)

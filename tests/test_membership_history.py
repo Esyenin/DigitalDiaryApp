@@ -6,6 +6,7 @@ from datetime import date, time, timedelta
 import pytest
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.models import (Attendance, Comment, Group, GroupMembership, Lesson,
                         LessonParticipant, Mark, Schedule, ScheduleGroupLink, Student)
@@ -48,6 +49,7 @@ def test_transfer_preserves_fixed_multigroup_roster_and_results(repo):
     lesson = _lesson(repo, [first, second])
 
     assert {item.id for item in repo.students_for_lesson(lesson)} == {student.id, other.id}
+    repo.complete_lesson_roster(lesson)
     assert lesson.participants_complete
     participant = next(item for item in lesson.participants if item.student_id == student.id)
     assert participant.group_id == first.id
@@ -72,11 +74,84 @@ def test_transfer_preserves_fixed_multigroup_roster_and_results(repo):
     )] == list(result_ids)
 
 
+def test_lesson_preview_and_summary_do_not_write_or_fix_roster(repo):
+    group = repo.create_group("Preview", None)
+    student = repo.create_student(group, "Ivan", "Ivanov")
+    lesson = _lesson(repo, [group])
+    before = repo.session.scalar(text("SELECT total_changes()"))
+    assert [item.id for item in repo.students_for_lesson(lesson)] == [student.id]
+    assert repo.lesson_attendance_summary(lesson)["rate"] == "-"
+    assert repo.session.scalar(text("SELECT total_changes()")) == before
+    assert not lesson.participants_complete
+    assert not lesson.participants
+    assert lesson.roster_completed_at is None
+
+    repo.complete_lesson_roster(lesson)
+    assert lesson.participants_complete
+    assert lesson.roster_completed_at is not None
+    participant_ids = [item.id for item in lesson.participants]
+    with pytest.raises(repository_module.RepositoryError, match="already complete"):
+        repo.complete_lesson_roster(lesson)
+    assert [item.id for item in lesson.participants] == participant_ids
+
+
+def test_same_day_transfer_cannot_falsely_fix_roster(repo):
+    first = repo.create_group("First", None)
+    second = repo.create_group("Second", None)
+    third = repo.create_group("Third", None)
+    student = repo.create_student(first, "Ivan", "Ivanov")
+    lesson = _lesson(repo, [first, second, third])
+    repo.transfer_student(student, second, date.today())
+    repo.transfer_student(student, third, date.today())
+    with pytest.raises(repository_module.RepositoryError, match="same-day group transfer"):
+        repo.complete_lesson_roster(lesson)
+    assert not lesson.participants_complete
+    assert not lesson.participants
+
+
+def test_roster_completion_rolls_back_all_changes(repo, monkeypatch):
+    group = repo.create_group("Rollback", None)
+    repo.create_student(group, "Ivan", "Ivanov")
+    lesson = _lesson(repo, [group])
+
+    def fail_commit(message):
+        raise SQLAlchemyError("injected completion failure")
+
+    monkeypatch.setattr(repo, "_commit_or_raise", fail_commit)
+    with pytest.raises(repository_module.RepositoryError, match="could not be completed"):
+        repo.complete_lesson_roster(lesson)
+    assert not lesson.participants_complete
+    assert lesson.roster_completed_at is None
+    assert not lesson.participants
+
+
+def test_repeat_migration_upgrades_old_roster_guard(repo):
+    from app.ui.data.membership_migration import ensure_membership_schema
+
+    group = repo.create_group("Upgrade", None)
+    repo.create_student(group, "Ivan", "Ivanov")
+    lesson = _lesson(repo, [group])
+    repo.complete_lesson_roster(lesson)
+    repo.session.rollback()
+    with repo.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER lesson_roster_guard")
+        connection.exec_driver_sql(
+            "CREATE TRIGGER lesson_roster_guard BEFORE UPDATE OF participants_complete "
+            "ON lessons BEGIN SELECT 1; END"
+        )
+    ensure_membership_schema(repo.engine)
+    ensure_membership_schema(repo.engine)
+    with pytest.raises(IntegrityError, match="immutable"):
+        repo.session.execute(update(Lesson).where(Lesson.id == lesson.id).values(roster_completed_at=None))
+    repo.session.rollback()
+    assert lesson.roster_completed_at is not None
+
+
 def test_archive_hides_student_and_preserves_lesson(repo):
     group = repo.create_group("Archive", None)
     student = repo.create_student(group, "Ivan", "Ivanov")
     lesson = _lesson(repo, [group])
-    repo.students_for_lesson(lesson)
+    repo.complete_lesson_roster(lesson)
     repo.save_lesson_student_record(lesson, student, attended=True, comment_text="", mark_value=83)
     repo.archive_student(student, reason="Graduated")
 
@@ -106,6 +181,8 @@ def test_future_lesson_roster_stays_provisional(repo):
     assert {item.id for item in repo.students_for_lesson(future)} == {student.id}
     assert not future.participants_complete
     assert not future.participants
+    with pytest.raises(repository_module.RepositoryError, match="future lesson"):
+        repo.complete_lesson_roster(future)
     repo.transfer_student(student, second, date.today())
     assert repo.students_for_lesson(future) == []
     assert not future.participants
@@ -161,13 +238,16 @@ def test_fixed_roster_is_immutable_through_direct_sql(repo):
     student = repo.create_student(group, "Ivan", "Ivanov")
     outsider = repo.create_student(other_group, "Anna", "Petrova")
     lesson = _lesson(repo, [group])
-    repo.students_for_lesson(lesson)
+    repo.complete_lesson_roster(lesson)
     participant_id = lesson.participants[0].id
     with pytest.raises(IntegrityError, match="immutable"):
         repo.session.execute(delete(LessonParticipant).where(LessonParticipant.id == participant_id))
     repo.session.rollback()
     with pytest.raises(IntegrityError, match="immutable"):
         repo.session.execute(update(Lesson).where(Lesson.id == lesson.id).values(participants_complete=False))
+    repo.session.rollback()
+    with pytest.raises(IntegrityError, match="immutable"):
+        repo.session.execute(update(Lesson).where(Lesson.id == lesson.id).values(roster_completed_at=None))
     repo.session.rollback()
     with pytest.raises(IntegrityError, match="outside fixed lesson roster"):
         repo.session.add(Attendance(student_id=outsider.id, lesson_id=lesson.id, is_visited=True))
@@ -191,7 +271,7 @@ def test_full_xlsx_restore_preserves_membership_and_roster(repo, tmp_path, monke
     second = repo.create_group("Second", None)
     student = repo.create_student(first, "Ivan", "Ivanov")
     lesson = _lesson(repo, [first])
-    repo.students_for_lesson(lesson)
+    repo.complete_lesson_roster(lesson)
     repo.save_lesson_student_record(lesson, student, attended=True, comment_text="Saved", mark_value=90)
     repo.transfer_student(student, second, date.today())
     if archived:

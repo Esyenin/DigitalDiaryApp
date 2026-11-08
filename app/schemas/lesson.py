@@ -50,6 +50,7 @@ class LessonCreateSchema(LessonBaseSchema):
     date: date_type
     participants_complete: bool | None = None
     roster_origin: str | None = None
+    roster_completed_at: datetime | None = None
 
     @model_validator(mode="before")
     @classmethod

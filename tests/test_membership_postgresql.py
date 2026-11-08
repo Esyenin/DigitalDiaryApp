@@ -1,10 +1,10 @@
 """Optional integration test; never connects to an application database."""
 
 import os
-from datetime import date, time
+from datetime import date, time, timedelta
 
 import pytest
-from sqlalchemy import create_engine, inspect, select, update
+from sqlalchemy import create_engine, delete, inspect, select, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
@@ -47,12 +47,31 @@ def test_postgresql_membership_and_roster_guards(monkeypatch):
             repo.session.add(lesson)
             repo.session.commit()
             assert [item.id for item in repo.students_for_lesson(lesson)] == [student.id]
+            repo.complete_lesson_roster(lesson)
             repo.transfer_student(student, second, date.today())
             assert repo.students_for_lesson(lesson)[0].id == student.id
             with pytest.raises(DBAPIError):
                 repo.session.execute(update(Student).where(Student.id == student.id).values(group_id=first.id))
             repo.session.rollback()
             assert repo.session.scalar(select(Student.group_id).where(Student.id == student.id)) == second.id
+            future = Lesson(schedule_id=schedule.id, date=date.today() + timedelta(days=7))
+            repo.session.add(future)
+            repo.session.commit()
+            moved = date.today() + timedelta(days=14)
+            repo.session.execute(update(Lesson).where(Lesson.id == future.id).values(date=moved))
+            repo.session.commit()
+            assert repo.session.scalar(select(Lesson.date).where(Lesson.id == future.id)) == moved
+            with pytest.raises(DBAPIError, match="lesson history"):
+                repo.session.execute(update(Lesson).where(Lesson.id == lesson.id).values(date=moved))
+            repo.session.rollback()
+            assert repo.session.scalar(select(Lesson.date).where(Lesson.id == lesson.id)) == date.today()
+            with pytest.raises(DBAPIError, match="lesson history"):
+                repo.session.execute(delete(Lesson).where(Lesson.id == lesson.id))
+            repo.session.rollback()
+            future_id = future.id
+            repo.session.execute(delete(Lesson).where(Lesson.id == future_id))
+            repo.session.commit()
+            assert repo.session.scalar(select(Lesson.id).where(Lesson.id == future_id)) is None
         finally:
             repo.close()
             repo.engine.dispose()

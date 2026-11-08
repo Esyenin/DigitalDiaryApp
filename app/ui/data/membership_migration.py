@@ -24,6 +24,7 @@ def _add_missing_columns(connection) -> None:
         "lessons": {
             "participants_complete": "BOOLEAN NOT NULL DEFAULT false",
             "roster_origin": "VARCHAR(24) NOT NULL DEFAULT 'legacy_unknown'",
+            "roster_completed_at": "TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME",
         },
         "lessonparticipants": {
             "group_id": "INTEGER REFERENCES groups(id)",
@@ -39,6 +40,7 @@ def _add_missing_columns(connection) -> None:
 
 
 def _sqlite_guards(connection) -> None:
+    connection.exec_driver_sql("DROP TRIGGER IF EXISTS lesson_roster_guard")
     connection.exec_driver_sql("""
         CREATE TRIGGER IF NOT EXISTS membership_overlap_insert
         BEFORE INSERT ON groupmemberships BEGIN
@@ -159,11 +161,14 @@ def _sqlite_guards(connection) -> None:
     """)
     connection.exec_driver_sql("""
         CREATE TRIGGER IF NOT EXISTS lesson_roster_guard
-        BEFORE UPDATE OF participants_complete, roster_origin ON lessons BEGIN
+        BEFORE UPDATE OF participants_complete, roster_origin, roster_completed_at ON lessons BEGIN
         SELECT RAISE(ABORT, 'fixed lesson roster is immutable') WHERE
             OLD.participants_complete = 1 AND (
                 NEW.participants_complete != 1 OR NEW.roster_origin IS NOT OLD.roster_origin
+                OR NEW.roster_completed_at IS NOT OLD.roster_completed_at
             );
+        SELECT RAISE(ABORT, 'roster completion time is required') WHERE
+            NEW.participants_complete = 1 AND NEW.roster_completed_at IS NULL;
         SELECT RAISE(ABORT, 'lesson results require roster participants') WHERE
           NEW.participants_complete = 1 AND OLD.participants_complete = 0
           AND (
@@ -377,8 +382,12 @@ def _postgresql_guards(connection) -> None:
         BEGIN
           IF OLD.participants_complete AND (
             NOT NEW.participants_complete OR NEW.roster_origin IS DISTINCT FROM OLD.roster_origin
+            OR NEW.roster_completed_at IS DISTINCT FROM OLD.roster_completed_at
           ) THEN
             RAISE EXCEPTION 'fixed lesson roster is immutable';
+          END IF;
+          IF NEW.participants_complete AND NEW.roster_completed_at IS NULL THEN
+            RAISE EXCEPTION 'roster completion time is required';
           END IF;
           IF NEW.participants_complete AND NOT OLD.participants_complete AND EXISTS (
             SELECT 1 FROM (
@@ -409,6 +418,9 @@ def _postgresql_guards(connection) -> None:
              OR EXISTS (SELECT 1 FROM comments WHERE lesson_id = OLD.id) THEN
             RAISE EXCEPTION 'lesson history cannot be deleted or moved';
           END IF;
+          IF TG_OP = 'UPDATE' THEN
+            RETURN NEW;
+          END IF;
           RETURN OLD;
         END;
         $$ LANGUAGE plpgsql
@@ -425,7 +437,7 @@ def _postgresql_guards(connection) -> None:
         ("participant_update_guard", "lessonparticipants", "UPDATE", "guard_participant_change"),
         ("participant_delete_guard", "lessonparticipants", "DELETE", "guard_participant_change"),
         ("participant_insert_guard", "lessonparticipants", "INSERT", "guard_participant_insert"),
-        ("lesson_roster_guard", "lessons", "UPDATE OF participants_complete, roster_origin", "guard_lesson_roster"),
+        ("lesson_roster_guard", "lessons", "UPDATE OF participants_complete, roster_origin, roster_completed_at", "guard_lesson_roster"),
         ("lesson_history_delete", "lessons", "DELETE", "guard_lesson_history"),
         ("lesson_history_move", "lessons", "UPDATE OF schedule_id, date", "guard_lesson_history"),
     ):
