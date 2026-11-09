@@ -198,14 +198,31 @@ class DiaryRepository:
         self.engine = create_engine(DATABASE_URL)
         if DATABASE_URL.startswith("sqlite"):
             event.listen(self.engine, "connect", self._enable_sqlite_foreign_keys)
-        ensure_schedule_schema(self.engine)
-        ensure_membership_schema(self.engine)
-        ensure_academic_schema(self.engine)
+        if self.engine.dialect.name == 'postgresql':
+            with self.engine.connect() as migration_lock:
+                migration_lock.execute(text('SELECT pg_advisory_lock(524114301)'))
+                try:
+                    self._initialize_schema()
+                finally:
+                    migration_lock.execute(text('SELECT pg_advisory_unlock(524114301)'))
+        else:
+            self._initialize_schema()
         self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
         self.session: Session = self.session_factory()
         self.import_export_service = ImportExportService()
         self._direct_alias_index = build_direct_alias_index()
         self._reference_alias_index = build_reference_alias_index()
+
+    def _initialize_schema(self):
+        from app.ui.data.journal_migration import prepare_journal_upgrade
+        prepare_journal_upgrade(self.engine)
+        ensure_schedule_schema(self.engine)
+        ensure_membership_schema(self.engine)
+        ensure_academic_schema(self.engine)
+        from app.ui.data.activity_migration import ensure_activity_schema
+        from app.ui.data.proof_migration import ensure_proof_schema
+        ensure_activity_schema(self.engine)
+        ensure_proof_schema(self.engine)
 
     def academic_action(self, action: str, *args, **kwargs):
         allowed = {"create_year", "create_term", "create_discipline", "create_offering",
@@ -223,6 +240,44 @@ class DiaryRepository:
     def academic_calendar(self):
         return AcademicService(self.session).calendar_settings()
 
+    def activity_action(self, action, **kwargs):
+        from app.services.journal_activity import ActivityService
+        allowed = {'create_room', 'create_layout', 'attach_layout', 'assign_seat', 'unassign_seat',
+                   'create_category', 'record_behavior', 'record_typical_behavior', 'correct_behavior'}
+        if action not in allowed:
+            raise RepositoryError('Unknown journal activity.')
+        try:
+            result = getattr(ActivityService(self.session), action)(**kwargs)
+            self._commit_or_raise('Journal activity was not saved.')
+            return result
+        except (AcademicError, SQLAlchemyError, ValueError) as exc:
+            self.session.rollback()
+            raise RepositoryError(str(exc)) from exc
+
+    def proof_action(self, action, **kwargs):
+        from app.services.attendance_proof import ProofService
+        if action != 'attach':
+            raise RepositoryError('Unknown proof operation.')
+        try:
+            result = ProofService(self.session).attach(**kwargs)
+            self._commit_or_raise('Attendance proof was not saved.')
+            return result
+        except (SQLAlchemyError, ValueError) as exc:
+            self.session.rollback()
+            raise RepositoryError(str(exc)) from exc
+
+    def journal_student(self, student_id, **filters):
+        from app.services.journal_analytics import JournalAnalytics
+        return JournalAnalytics(self.session).student(student_id, **filters)
+
+    def journal_group(self, group_id, **filters):
+        from app.services.journal_analytics import JournalAnalytics
+        return JournalAnalytics(self.session).group(group_id, **filters)
+
+    def journal_offering(self, offering_id, **filters):
+        from app.services.journal_analytics import JournalAnalytics
+        return JournalAnalytics(self.session).offering(offering_id, **filters)
+
     def teaching_action(self, action: str, **kwargs):
         allowed = {"create_event", "create_lab", "create_checklist", "record_attempt", "correct_result",
                    "cancel_event", "create_consultation", "register_visit", "create_plan", "add_plan_stage",
@@ -237,9 +292,9 @@ class DiaryRepository:
             self.session.rollback()
             raise RepositoryError(str(exc)) from exc
 
-    def teaching_summary(self, offering_id, student_id, module_id=None):
+    def teaching_summary(self, offering_id, student_id, module_id=None, *, as_of=None):
         try:
-            return TeachingService(self.session).summary(offering_id, student_id, module_id)
+            return TeachingService(self.session).summary(offering_id, student_id, module_id, as_of=as_of or date.today())
         except AcademicError as exc:
             raise RepositoryError(str(exc)) from exc
 
@@ -678,6 +733,27 @@ class DiaryRepository:
             return revision.status, revision.late_seconds
         return ("present" if attendance.is_visited else "absent"), None
 
+    def lesson_attendance_counts(self, lesson):
+        from app.models import AttendanceRevision
+        counts = dict(present=0,late=0,excused=0,absent=0,unknown=0,rate='-')
+        roster_complete = lesson.participants_complete and lesson.roster_time_basis == 'utc' and lesson.date <= date.today()
+        complete = roster_complete
+        students = self.students_for_lesson(lesson)
+        for student in students:
+            attendance = self.attendance_for(lesson, student)
+            if lesson.date > date.today():
+                state = 'unknown'
+            elif attendance is None:
+                state = 'absent' if roster_complete else 'unknown'
+            else:
+                state = self.attendance_state(lesson, student)[0]
+                if self.session.scalar(select(AttendanceRevision.id).where(AttendanceRevision.attendance_id == attendance.id).limit(1)) is None:
+                    complete = False
+            counts[state] += 1
+        if complete and students:
+            counts['rate'] = round((counts['present']+counts['late'])/len(students)*100)
+        return counts
+
     def schedule_topic(self, schedule: Schedule) -> str:
         lessons = sorted(schedule.lessons, key=lambda item: item.date)
         for lesson in lessons:
@@ -739,6 +815,8 @@ class DiaryRepository:
         mark_value: int | None,
         attendance_reason: str | None = None,
     ) -> None:
+        if lesson.date > date.today():
+            raise RepositoryError("Attendance cannot be recorded for a future lesson.")
         if lesson.participants_complete and student.id not in {
             item.student_id for item in lesson.participants
         }:
@@ -761,7 +839,7 @@ class DiaryRepository:
                 Attendance.student_id == student.id,
             )
         )
-        if lesson.date <= date.today() and (attendance is None or attendance.is_visited != attended):
+        if attendance is None or attendance.is_visited != attended:
             try:
                 TeachingService(self.session).record_attendance(
                     lesson_id=lesson.id, student_id=student.id,
@@ -771,16 +849,6 @@ class DiaryRepository:
             except (AcademicError, SQLAlchemyError) as exc:
                 self.session.rollback()
                 raise RepositoryError(str(exc)) from exc
-        elif attendance is None:
-            self.session.add(
-                Attendance(
-                    lesson_id=lesson.id,
-                    student_id=student.id,
-                    is_visited=attended,
-                )
-            )
-        else:
-            attendance.is_visited = attended
 
         comment = self.session.scalar(
             select(Comment).where(
@@ -864,7 +932,7 @@ class DiaryRepository:
         )).all())
         return participant_ids | (unresolved_ids & known_ids)
 
-    def group_stats(self, group: Group) -> dict[str, int | str]:
+    def group_stats(self, group: Group) -> dict[str, object]:
         students = [student for student in group.students if student.status == "active"]
         lessons = self._completed_lessons_for_group(group)
         all_marks: list[int] = []
@@ -891,7 +959,7 @@ class DiaryRepository:
         overall = round(sum(all_marks) / len(all_marks)) if all_marks else 0
         lab_average = round(sum(lab_marks) / len(lab_marks)) if lab_marks else 0
         test_average = round(sum(test_marks) / len(test_marks)) if test_marks else "-"
-        return {
+        result = {
             "overall": overall,
             "lab": lab_average,
             "test": test_average,
@@ -902,8 +970,14 @@ class DiaryRepository:
                 len(all_marks), attendance_slots,
             ) if complete else "Incomplete history",
         }
+        result['legacy'] = dict(result)
+        result['academic'] = self.journal_group(group.id)
+        result['attendance_counts'] = result['academic']['attendance']
+        rate = result['attendance_counts']['percentage']
+        result['attendance'] = round(rate) if rate is not None else '-'
+        return result
 
-    def student_stats(self, student: Student) -> dict[str, int | str]:
+    def student_stats(self, student: Student) -> dict[str, object]:
         lessons = self._completed_lessons_for_student(student)
         uncertain_legacy_history = any(
             membership.origin == "migrated_unknown"
@@ -933,12 +1007,18 @@ class DiaryRepository:
             round(present / len(lessons) * 100) if lessons else 0
         ) if (not uncertain_legacy_history
               and all(lesson.participants_complete for lesson in lessons)) else "-"
-        return {
+        result = {
             "overall": round(sum(all_scores) / len(all_scores)) if all_scores else "-",
             "lab": round(sum(lab_scores) / len(lab_scores)) if lab_scores else "-",
             "test": round(sum(test_scores) / len(test_scores)) if test_scores else "-",
             "attendance": attendance,
         }
+        result['legacy'] = dict(result)
+        result['academic'] = self.journal_student(student.id)
+        result['attendance_counts'] = result['academic']['attendance']
+        rate = result['attendance_counts']['percentage']
+        result['attendance'] = round(rate) if rate is not None else '-'
+        return result
 
     def _completed_lessons_for_group(self, group: Group) -> list[Lesson]:
         lesson_by_id: dict[int, Lesson] = {}
@@ -1534,7 +1614,7 @@ class DiaryRepository:
         source_path = Path(file_path)
         if strategy == "smart":
             return self._preview_smart_import(source_path, mode)
-        from app.ui.data.teaching_archive import preview_archive
+        from app.ui.data.teaching_archive import VERSION, preview_archive
         try:
             archive = preview_archive(source_path)
         except (ValueError, TypeError) as exc:
@@ -1544,7 +1624,7 @@ class DiaryRepository:
                 raise RepositoryError("Full teaching archives require Standard import into an empty database.")
             aliases = {model.__table__.name: name for name, model in self._model_by_sheet.items()}
             return ImportPreview(source_path, strategy, mode,
-                {aliases.get(table, table): rows for table, rows in archive.items()}, archive_version=1)
+                {aliases.get(table, table): rows for table, rows in archive.items()}, archive_version=VERSION)
         self._reject_legacy_schedule_workbook(source_path)
         if strategy == "template" or (
                 strategy == "strict" and not sheet_name and not cell_range
@@ -1929,7 +2009,8 @@ class DiaryRepository:
         if preview.total_rows == 0:
             raise RepositoryError("The selected import does not contain rows.")
         if preview.archive_version is not None:
-            if preview.archive_version != 1 or preview.strategy != "standard":
+            from app.ui.data.teaching_archive import VERSION
+            if preview.archive_version != VERSION or preview.strategy != "standard":
                 raise RepositoryError("Unsupported teaching archive import.")
             from app.ui.data.teaching_archive import restore_archive
             names = {name: model.__table__.name for name, model in self._model_by_sheet.items()}

@@ -2,9 +2,12 @@
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+import base64
+import hashlib
+import math
 
 from openpyxl import Workbook, load_workbook
-from sqlalchemy import Boolean, Date, DateTime, Integer, Numeric, String, Time, select, text
+from sqlalchemy import Boolean, Date, DateTime, Float, Integer, Numeric, String, Time, UniqueConstraint, select, text
 
 from app.models import Base
 from app.models.education import UTCDateTime
@@ -17,7 +20,13 @@ from app.ui.data.schedule_migration import (
 
 MANIFEST = "_diary_archive"
 MAGIC = "DigitalDiaryApp full teaching archive"
-VERSION = 1
+VERSION = 2
+NEW_TABLES = frozenset({'classrooms', 'seating_layouts', 'seats', 'lesson_layouts',
+    'seat_assignments', 'behavior_categories', 'behavior_events', 'behavior_corrections',
+    'proof_documents', 'proof_chunks'})
+V1_MISSING_COLUMNS = {'attendance_revisions': frozenset({
+    'previous_status', 'previous_arrived_at', 'previous_late_seconds'}),
+    'assessment_events': frozenset({'configured_at'})}
 
 
 def _tables():
@@ -29,14 +38,20 @@ def _tables():
     criteria = next(t for t in tables if t.name == 'checklist_criteria')
     tables.remove(criteria)
     tables.insert(tables.index(next(t for t in tables if t.name == 'assessment_attempts')), criteria)
-    return tables
+    if 'seats' in Base.metadata.tables:
+        seats = next(t for t in tables if t.name == 'seats')
+        tables.remove(seats)
+        tables.insert(tables.index(next(t for t in tables if t.name == 'lesson_layouts')), seats)
+    # Activity guards need enrollment and fixed roster evidence as well as FKs.
+    # Keep the legacy table order intact and replay extensions only afterwards.
+    return [t for t in tables if t.name not in NEW_TABLES] + [t for t in tables if t.name in NEW_TABLES]
 
 
 def _kind(column):
     typ = column.type
     if isinstance(typ, UTCDateTime):
         return "utc_datetime"
-    for cls, name in ((Boolean, "boolean"), (Integer, "integer"),
+    for cls, name in ((Boolean, "boolean"), (Integer, "integer"), (Float, 'float'),
                       (Numeric, "decimal"), (DateTime, "datetime"),
                       (Date, "date"), (Time, "time"), (String, "string")):
         if isinstance(typ, cls):
@@ -56,6 +71,10 @@ def _encode(value, column):
         return "\\E" if value == "" else "\\" + value if value.startswith("\\") else value
     if kind == "boolean":
         return bool(value)
+    if kind == 'float':
+        if not math.isfinite(value):
+            raise ValueError(f'Non-finite float in {column}')
+        return repr(value)
     return value.isoformat() if isinstance(value, (date, datetime, time)) else str(value)
 
 
@@ -82,6 +101,11 @@ def _decode(value, column):
         result = int(value)
         if str(result) != value:
             raise ValueError(f"Invalid integer in {column}")
+        return result
+    if kind == 'float':
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError(f'Non-finite float in {column}')
         return result
     if kind == "decimal":
         result = Decimal(value)
@@ -146,22 +170,32 @@ def preview_archive(path):
         if MANIFEST not in workbook.sheetnames:
             return None
         manifest = [tuple(row) + (None,) * (4 - len(row)) for row in workbook[MANIFEST].values]
-        if manifest != [(MAGIC, VERSION, None, None), ("table", "column", "type", "nullable"), *_schema()]:
+        version = manifest[0][1] if manifest else None
+        tables = [t for t in _tables() if version != 1 or t.name not in NEW_TABLES]
+        schema = [r for r in _schema() if version != 1 or (
+            r[0] not in NEW_TABLES and r[1] not in V1_MISSING_COLUMNS.get(r[0], ()))]
+        if (type(version) is not int or version not in (1, VERSION)
+                or any(type(row[3]) is not bool for row in manifest[2:])
+                or manifest != [(MAGIC, version, None, None), ("table", "column", "type", "nullable"), *schema]):
             raise ValueError("Unsupported archive version or altered schema manifest.")
-        if workbook.sheetnames != [MANIFEST, *[t.name for t in _tables()]]:
+        if workbook.sheetnames != [MANIFEST, *[t.name for t in tables]]:
             raise ValueError("Archive sheets are missing, unexpected, or out of order.")
-        data = {}
-        for table in _tables():
+        data = {t.name: [] for t in _tables()}
+        for table in tables:
+            missing = V1_MISSING_COLUMNS.get(table.name, ()) if version == 1 else ()
+            columns = [c for c in table.columns if c.name not in missing]
             rows = iter(workbook[table.name].iter_rows())
             header = next(rows, ())
-            if tuple(c.value for c in header) != tuple(table.columns.keys()):
+            if tuple(c.value for c in header) != tuple(c.name for c in columns):
                 raise ValueError(f"Altered columns in {table.name}")
             data[table.name] = []
             for row in rows:
-                if len(row) != len(table.columns) or any(c.data_type == "f" for c in row):
+                if len(row) != len(columns) or any(c.data_type == "f" for c in row):
                     raise ValueError(f"Invalid row or formula in {table.name}")
                 try:
-                    data[table.name].append({c.name: _decode(cell.value, c) for c, cell in zip(table.columns, row)})
+                    decoded = {c.name: _decode(cell.value, c) for c, cell in zip(columns, row)}
+                    decoded.update({name: None for name in missing})
+                    data[table.name].append(decoded)
                 except (ValueError, TypeError, InvalidOperation) as exc:
                     raise ValueError(f"Invalid archive data in {table.name}: {exc}") from exc
         _validate(data)
@@ -183,7 +217,7 @@ def _validate(data):
                 raise ValueError(f"Altered columns in {table.name}")
             for col in table.columns:
                 value = row[col.name]
-                expected = {'integer': int, 'boolean': bool, 'string': str, 'decimal': Decimal,
+                expected = {'integer': int, 'float': float, 'boolean': bool, 'string': str, 'decimal': Decimal,
                             'date': date, 'time': time, 'datetime': datetime, 'utc_datetime': datetime}[_kind(col)]
                 if value is not None and type(value) is not expected:
                     raise ValueError(f'Invalid typed value in {col}')
@@ -204,6 +238,9 @@ def _validate(data):
                     parent(fk.column.table.name, row[fk.parent.name])
     def term_for(offering_id):
         return parent('academic_terms', parent('course_offerings', offering_id)['term_id'])
+    for attendance in data['attendances']:
+        if parent('lessons', attendance['lesson_id'])['date'] > date.today():
+            raise ValueError('Archive contains future attendance; restoration cannot bypass attendance safeguards.')
     def bounds(term):
         return term['start_date'], term['start_date'] + timedelta(weeks=term['total_weeks'])
     for term in data['academic_terms']:
@@ -340,12 +377,18 @@ def _validate(data):
         if entry['consultation_visit_id'] is not None and parent('consultation_visits', entry['consultation_visit_id'])['student_id'] != plan['student_id']:
             raise ValueError('Plan consultation belongs to another student.')
     for attendance in data['attendances']:
-        revisions = [r for r in data['attendance_revisions'] if r['attendance_id'] == attendance['id']]
+        revisions = sorted((r for r in data['attendance_revisions'] if r['attendance_id'] == attendance['id']), key=lambda r: r['id'])
         if revisions:
             latest = max(revisions, key=lambda r: r['id'])
             if attendance['is_visited'] != (latest['status'] in {'present', 'late'}):
                 raise ValueError('Attendance projection contradicts its latest revision.')
+        previous = None
         for revision in revisions:
+            before = revision['previous_status']
+            if before is not None and (before not in {'present', 'absent', 'late', 'excused'}
+                    or previous is not None and before != previous['status']):
+                raise ValueError('Previous attendance state contradicts its revision chain.')
+            previous = revision
             if not revision['reason'].strip() or not revision['source'].strip():
                 raise ValueError('Attendance revision requires reason and source.')
             if revision['late_seconds'] is not None and revision['late_seconds'] < 0:
@@ -396,6 +439,91 @@ def _validate(data):
                 if protected:
                     raise ValueError('A conducted or filled lesson cannot be cancelled or moved in an archive.')
             held = held or entry['status'] == 'held'
+    _validate_journal(data, by, parent, schedule_groups)
+
+
+def _validate_journal(data, by, parent, schedule_groups):
+    """Validate immutable journal references before any restore writes happen."""
+    for name in NEW_TABLES:
+        for constraint in Base.metadata.tables[name].constraints:
+            if not isinstance(constraint, UniqueConstraint):
+                continue
+            seen = set()
+            for row in data[name]:
+                key = tuple(row[c.name] for c in constraint.columns)
+                if None not in key:
+                    if key in seen:
+                        raise ValueError(f'Duplicate journal key in {name}')
+                    seen.add(key)
+    def eligible(lesson_id, student_id):
+        lesson = parent('lessons', lesson_id)
+        parent('students', student_id)
+        if any(r['lesson_id'] == lesson_id and r['student_id'] == student_id for r in data['lessonparticipants']):
+            return True
+        if lesson['participants_complete']:
+            return False
+        return any(r['student_id'] == student_id
+            and r['group_id'] in schedule_groups.get(lesson['schedule_id'], set())
+            and r['start_date'] <= lesson['date']
+            and (r['end_date'] is None or lesson['date'] < r['end_date'])
+            and (r['origin'] != 'migrated_unknown' or r['known_from'] is not None and r['known_from'] <= lesson['date'])
+            for r in data['groupmemberships'])
+    for room in data['classrooms']:
+        if not room['name'].strip():
+            raise ValueError('Empty classroom name.')
+    for layout in data['seating_layouts']:
+        if layout['revision'] <= 0 or not layout['name'].strip() or not layout['sealed']:
+            raise ValueError('Invalid layout version.')
+    for room in data['classrooms']:
+        revisions = sorted(r['revision'] for r in data['seating_layouts'] if r['room_id'] == room['id'])
+        if revisions != list(range(1, len(revisions) + 1)):
+            raise ValueError('Layout revision history has gaps.')
+    for seat in data['seats']:
+        if not seat['label'].strip() or not all(0 <= seat[k] <= 10000 for k in ('x', 'y')):
+            raise ValueError('Invalid seat position or label.')
+    layouts = {r['lesson_id']: r['layout_id'] for r in data['lesson_layouts']}
+    active = {}
+    for row in sorted(data['seat_assignments'], key=lambda r: r['id']):
+        key = row['lesson_id'], row['student_id']
+        if not row['reason'].strip() or not row['operation_key'].strip() or not eligible(*key):
+            raise ValueError('Invalid seat assignment participant or reason.')
+        if row['lesson_id'] not in layouts:
+            raise ValueError('Seat assignment requires lesson layout.')
+        if row['seat_id'] is not None and parent('seats', row['seat_id'])['layout_id'] != layouts[row['lesson_id']]:
+            raise ValueError('Seat belongs to another lesson layout.')
+        old = active.get(key)
+        if row['previous_id'] != (old['id'] if old else None) or old and row['occurred_at'] < old['occurred_at']:
+            raise ValueError('Invalid seat revision chain.')
+        if row['seat_id'] is not None and any(k != key and k[0] == key[0] and r['seat_id'] == row['seat_id'] for k, r in active.items()):
+            raise ValueError('Duplicate active seat assignment.')
+        active[key] = row
+    for category in data['behavior_categories']:
+        if category['polarity'] not in {'positive', 'negative'} or not category['name'].strip():
+            raise ValueError('Invalid behavior category.')
+    for row in data['behavior_events']:
+        if not row['source'].strip() or not row['operation_key'].strip() or not eligible(row['lesson_id'], row['student_id']):
+            raise ValueError('Invalid behavior event participant or source.')
+    for row in data['behavior_corrections']:
+        event = parent('behavior_events', row['event_id'])
+        if (not row['reason'].strip() or not row['source'].strip()
+                or row['occurred_at'] < event['occurred_at']
+                or not eligible(event['lesson_id'], row['student_id'])):
+            raise ValueError('Invalid behavior correction participant, reason or source.')
+    from app.services.attendance_proof import validate_content, MAX_SIZE, CHUNK_SIZE
+    for doc in data['proof_documents']:
+        revision = parent('attendance_revisions', doc['revision_id'])
+        chunks = sorted((r for r in data['proof_chunks'] if r['document_id'] == doc['id']), key=lambda r: r['position'])
+        if (not doc['sealed'] or revision['status'] != 'excused' or not 0 < doc['size'] <= MAX_SIZE
+                or not chunks or [r['position'] for r in chunks] != list(range(len(chunks)))
+                or any(not 0 < len(r['data_text']) <= CHUNK_SIZE for r in chunks)
+                or sum(len(r['data_text']) for r in chunks) > ((MAX_SIZE + 2) // 3) * 4):
+            raise ValueError('Invalid proof document or chunks.')
+        encoded = ''.join(r['data_text'] for r in chunks)
+        content = base64.b64decode(encoded, validate=True)
+        if (len(content) != doc['size'] or hashlib.sha256(content).hexdigest() != doc['sha256']
+                or base64.b64encode(content).decode('ascii') != encoded
+                or validate_content(doc['filename'], content) != (doc['filename'], doc['mime'])):
+            raise ValueError('Invalid proof integrity or metadata.')
 
 
 def restore_archive(repository, data):
@@ -437,6 +565,16 @@ def restore_archive(repository, data):
                     rows = [dict(row, is_archived=False) for row in rows]
                 elif table.name == 'assessment_attempts':
                     rows = [dict(row, finalized=False) for row in rows]
+                elif table.name == 'attendances':
+                    initial = {}
+                    for revision in sorted(data['attendance_revisions'], key=lambda r: r['id']):
+                        initial.setdefault(revision['attendance_id'], revision['previous_status'])
+                    rows = [dict(row, is_visited=initial[row['id']] in {'present', 'late'})
+                        if initial.get(row['id']) is not None else row for row in rows]
+                elif table.name == 'proof_documents':
+                    rows = [dict(row, sealed=False) for row in rows]
+                elif table.name == 'seating_layouts':
+                    rows = [dict(row, sealed=False) for row in rows]
                 if table.name == 'assessment_events':
                     # Restore cancelled events first, immediately followed by their
                     # cancellations, before inserting their active replacements.
@@ -454,8 +592,22 @@ def restore_archive(repository, data):
                 for row in data['assessment_attempts']:
                     connection.execute(attempts.update().where(attempts.c.id == row['id']).values(
                         finalized=True, updated_at=row['updated_at']))
+            if table.name == 'seats':
+                layouts = Base.metadata.tables['seating_layouts']
+                for row in data['seating_layouts']:
+                    connection.execute(layouts.update().where(layouts.c.id == row['id']).values(
+                        sealed=True, updated_at=row['updated_at']))
+            if table.name == 'proof_chunks':
+                documents = Base.metadata.tables['proof_documents']
+                for row in data['proof_documents']:
+                    connection.execute(documents.update().where(documents.c.id == row['id']).values(
+                        sealed=True, updated_at=row['updated_at']))
         repository._validate_restored_history()
         _education_guards(connection)
+        from app.ui.data.activity_migration import install_activity_guards
+        from app.ui.data.proof_migration import install_proof_guards
+        install_activity_guards(connection)
+        install_proof_guards(connection)
         set_membership_import_mode(connection, enabled=False)
         if connection.dialect.name == 'sqlite':
             _install_sqlite_history_guards(connection)

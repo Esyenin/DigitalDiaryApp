@@ -50,6 +50,7 @@ class AssessmentEvent(Base):
     title: Mapped[str] = mapped_column(String(256))
     category: Mapped[str] = mapped_column(String(32))
     custom_type: Mapped[str | None] = mapped_column(String(128))
+    configured_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), default=utc_now)
     max_points: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     required: Mapped[bool] = mapped_column(Boolean)
     conditions: Mapped[str] = mapped_column(Text, default="")
@@ -151,6 +152,9 @@ class AttendanceRevision(Base):
     __table_args__ = (CheckConstraint("status IN ('absent','present','late','excused')"),)
     attendance_id: Mapped[int] = mapped_column(ForeignKey("attendances.id", ondelete="RESTRICT"))
     status: Mapped[str] = mapped_column(String(16))
+    previous_status: Mapped[str | None] = mapped_column(String(16))
+    previous_arrived_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    previous_late_seconds: Mapped[int | None]
     arrived_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     late_seconds: Mapped[int | None]
     reason: Mapped[str] = mapped_column(Text)

@@ -113,6 +113,8 @@ class TeachingService:
         module, offering = self._offering(module_id)
         if category not in {"seminar_start", "seminar_end", "lab", "checkpoint", "additional"}:
             raise TeachingError("Unknown assessment category.")
+        if category in {"seminar_start", "seminar_end"} and lesson_id is None:
+            raise TeachingError("A seminar test requires a concrete lesson in its course and module.")
         if attempt_policy not in {"best", "latest"} or (max_attempts is not None and max_attempts < 1):
             raise TeachingError("Choose best/latest policy and a positive attempt limit, or no limit.")
         if lesson_id is not None:
@@ -254,7 +256,7 @@ class TeachingService:
         self._audit("cancel_event", item, reason)
         return item
 
-    def summary(self, offering_id, student_id, module_id=None):
+    def summary(self, offering_id, student_id, module_id=None, *, as_of=None, start_date=None, end_date=None):
         offering = self._get(CourseOffering, offering_id)
         self._eligible(offering, student_id)
         modules = list(self.session.scalars(select(TeachingModule).where(TeachingModule.offering_id == offering_id)
@@ -263,30 +265,52 @@ class TeachingService:
             modules = [module for module in modules if module.id == module_id]
             if not modules:
                 raise TeachingError("Module does not belong to the course.")
-        result = dict(earned=Decimal(0), maximum=Decimal(0), remaining=Decimal(0), debts=[], modules=[], events=[])
+        cutoff = datetime.combine(as_of, datetime.max.time()).astimezone(timezone.utc) if as_of else None
+        def known_at(value):
+            if cutoff is None or value is None:
+                return True
+            value = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+            return value <= cutoff
+        result = dict(earned=Decimal(0), maximum=Decimal(0), remaining=Decimal(0), debts=[], pending=[], modules=[], events=[])
         for module in modules:
+            if start_date and module.end_date <= start_date or end_date and module.start_date > end_date:
+                continue
             total = dict(id=module.id, name=module.name, earned=Decimal(0), maximum=Decimal(0), remaining=Decimal(0))
             for event in self.session.scalars(select(AssessmentEvent).where(AssessmentEvent.module_id == module.id).order_by(AssessmentEvent.id)):
-                if self.session.scalar(select(EventCancellation.id).where(EventCancellation.event_id == event.id)):
+                if not known_at(event.configured_at):
+                    continue
+                if event.lesson_id is not None:
+                    event_day = self._get(Lesson, event.lesson_id).date
+                    if start_date and event_day < start_date or end_date and event_day > end_date:
+                        continue
+                cancellation = self.session.scalar(select(EventCancellation).where(EventCancellation.event_id == event.id))
+                if cancellation is not None and known_at(cancellation.occurred_at):
                     continue
                 attempts = list(self.session.scalars(select(AssessmentAttempt).where(
                     AssessmentAttempt.event_id == event.id, AssessmentAttempt.student_id == student_id)
                     .where(AssessmentAttempt.finalized.is_(True))
                     .order_by(AssessmentAttempt.attempt_number)))
+                attempts = [attempt for attempt in attempts if known_at(attempt.occurred_at)]
                 effective = []
                 for attempt in attempts:
-                    correction = self.session.scalar(select(ResultCorrection).where(ResultCorrection.attempt_id == attempt.id)
-                                                     .order_by(ResultCorrection.id.desc()).limit(1))
+                    corrections = list(self.session.scalars(select(ResultCorrection).where(ResultCorrection.attempt_id == attempt.id)
+                                                           .order_by(ResultCorrection.id.desc())))
+                    correction = next((item for item in corrections if known_at(item.occurred_at)), None)
                     effective.append((correction.points, correction.passed) if correction else (attempt.points, attempt.passed))
                 chosen = (max(effective, key=lambda value: (value[0], value[1])) if event.attempt_policy == "best"
                           else effective[-1]) if effective else (Decimal(0), False)
                 earned, passed = chosen
                 remaining = event.max_points - earned if event.max_attempts is None or len(attempts) < event.max_attempts else Decimal(0)
                 row = dict(id=event.id, title=event.title, earned=earned, maximum=event.max_points,
-                           passed=passed, debt=event.required and not passed, attempts=len(attempts))
+                           category=event.category, custom_type=event.custom_type, required=event.required,
+                           passed=passed, debt=event.required and not passed and (cutoff is None or event.due_at is None or known_at(event.due_at)),
+                           pending=event.required and not passed and cutoff is not None and event.due_at is not None and not known_at(event.due_at),
+                           attempts=len(attempts))
                 result["events"].append(row)
                 if row["debt"]:
                     result["debts"].append(dict(id=event.id, title=event.title))
+                if row["pending"]:
+                    result["pending"].append(dict(id=event.id, title=event.title))
                 for key, value in (("earned", earned), ("maximum", event.max_points), ("remaining", remaining)):
                     total[key] += value
                     result[key] += value
@@ -364,6 +388,9 @@ class TeachingService:
                                                                  Attendance.student_id == student_id))
         if attendance is None:
             attendance = self._add(Attendance(lesson_id=lesson_id, student_id=student_id, is_visited=False))
+        previous_revision = self.session.scalar(select(AttendanceRevision).where(
+            AttendanceRevision.attendance_id == attendance.id).order_by(AttendanceRevision.id.desc()).limit(1))
+        previous_status = previous_revision.status if previous_revision else ('present' if attendance.is_visited else 'absent')
         arrival = aware_utc(arrived_at) if arrived_at is not None else None
         late_seconds = None
         if status in {"present", "late"}:
@@ -389,6 +416,9 @@ class TeachingService:
         if retry is not None:
             return retry
         revision = self._add(AttendanceRevision(**values, operation_key=operation_key, late_seconds=late_seconds,
+            previous_status=previous_status,
+            previous_arrived_at=previous_revision.arrived_at if previous_revision else None,
+            previous_late_seconds=previous_revision.late_seconds if previous_revision else None,
             **({"arrived_at": arrival} if arrived_at is None else {})))
         attendance.is_visited = status in {"present", "late"}
         self.session.flush()

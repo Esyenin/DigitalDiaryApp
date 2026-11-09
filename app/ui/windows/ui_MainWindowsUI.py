@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QInputDialog,
+    QToolButton,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -189,6 +190,10 @@ class MainWindow(QMainWindow):
         academic_action.triggered.connect(self.show_academic_workspace)
         teaching_action = self.ui.menu.addAction("Teaching process...")
         teaching_action.triggered.connect(lambda: self.show_teaching_workspace())
+        self.ui.menu.addAction('Journal analytics...').triggered.connect(lambda: self.show_journal_workspace())
+        self.ui.menu.addAction('Seating and behavior...').triggered.connect(lambda: self.show_seating_workspace())
+        self.ui.menu.addAction('Academic PDF reports...').triggered.connect(lambda: self.show_reports_workspace())
+        self.ui.menu.addAction('Read-only SQL viewer...').triggered.connect(lambda: self.show_sql_workspace())
 
     def show_academic_workspace(self):
         from app.ui.windows.academic_workspace import AcademicWorkspace
@@ -213,6 +218,50 @@ class MainWindow(QMainWindow):
         finally:
             workspace.deleteLater()
         self.show_lesson_detail(lesson, push_history=False)
+
+    def show_journal_workspace(self, *, student_id=None, group_id=None, offering_id=None, term_id=None, push_history=True):
+        from app.ui.windows.journal_workspace import JournalWorkspace
+        if push_history:
+            self._push_current_route()
+        self._show_detail_page(JournalWorkspace(self, student_id=student_id, group_id=group_id, offering_id=offering_id,term_id=term_id))
+        self.current_route = ('journal', (student_id, group_id, offering_id,term_id))
+
+    def show_seating_workspace(self, lesson_id=None, *, push_history=True):
+        from app.ui.windows.seating_workspace import SeatingWorkspace
+        if push_history:
+            self._push_current_route()
+        workspace = SeatingWorkspace(self, lesson_id=lesson_id)
+        workspace.attendance_requested.connect(lambda lesson, student: self.show_attendance_editor(
+            self.repository.get_lesson(lesson), self.repository.get_student(student)))
+        workspace.profile_requested.connect(lambda student: self.show_student_detail(self.repository.get_student(student)))
+        self._show_detail_page(workspace)
+        self.current_route = ('seating', lesson_id)
+
+    def show_reports_workspace(self, *, push_history=True):
+        from app.ui.windows.reports_workspace import ReportsWorkspace
+        if push_history:
+            self._push_current_route()
+        self._show_detail_page(ReportsWorkspace(self))
+        self.current_route = ('reports', None)
+
+    def show_sql_workspace(self, *, push_history=True):
+        from app.ui.windows.sql_workspace import SQLWorkspace
+        if push_history:
+            self._push_current_route()
+        self._show_detail_page(SQLWorkspace(self))
+        self.current_route = ('sql', None)
+
+    def show_attendance_proof(self, lesson, student):
+        from app.ui.windows.proof_dialog import ProofDialog
+        ProofDialog(self, lesson.id, student.id).exec()
+
+    def record_behavior_for_student(self, lesson, student, name):
+        from uuid import uuid4
+        try:
+            self.repository.activity_action('record_typical_behavior', student_id=student.id,
+                lesson_id=lesson.id, name=name, operation_key=uuid4().hex)
+        except RepositoryError as exc:
+            QMessageBox.warning(self, 'Behavior event', str(exc))
 
     def _configure_inputs(self) -> None:
         self._replace_semester_text_edits()
@@ -740,6 +789,19 @@ class MainWindow(QMainWindow):
 
     def _restore_route(self, route: tuple[str, object | None]) -> None:
         route_type, route_value = route
+        if route_type == 'journal':
+            student, group, offering, term = route_value or (None, None, None,None)
+            self.show_journal_workspace(student_id=student, group_id=group, offering_id=offering,term_id=term,push_history=False)
+            return
+        if route_type == 'seating':
+            self.show_seating_workspace(route_value, push_history=False)
+            return
+        if route_type == 'reports':
+            self.show_reports_workspace(push_history=False)
+            return
+        if route_type == 'sql':
+            self.show_sql_workspace(push_history=False)
+            return
         if route_type == "teaching":
             offering_id, student_id, lesson_id = route_value or (None, None, None)
             self.show_teaching_workspace(offering_id=offering_id, student_id=student_id,
@@ -841,6 +903,9 @@ class MainWindow(QMainWindow):
         teaching_button.clicked.connect(lambda checked=False: self.show_teaching_workspace(
             offering_id=lesson.schedule.offering_id, lesson_id=lesson.id))
         header_layout.addWidget(teaching_button, alignment=Qt.AlignmentFlag.AlignLeft)
+        seating_button = QPushButton('Seating and quick events')
+        seating_button.clicked.connect(lambda checked=False: self.show_seating_workspace(lesson.id))
+        header_layout.addWidget(seating_button, alignment=Qt.AlignmentFlag.AlignLeft)
         if lesson.participants_complete:
             completed = QLabel(
                 "Roll call completed"
@@ -859,16 +924,21 @@ class MainWindow(QMainWindow):
         layout.addWidget(header)
 
         summary = self.repository.lesson_attendance_summary(lesson)
+        counts = self.repository.lesson_attendance_counts(lesson)
         stats = QHBoxLayout()
         stats.setSpacing(18)
         stats.addWidget(make_metric(
             "Total Students" if lesson.participants_complete else "Known Students",
             summary["total"], "MetricWhite",
         ))
-        stats.addWidget(make_metric("Present", summary["present"], "MetricGreen"))
-        stats.addWidget(make_metric("Absent", summary["absent"], "MetricRed"))
-        stats.addWidget(make_metric("Attendance Rate", format_percent(summary["rate"]), "MetricBlue"))
+        stats.addWidget(make_metric("Visited (including late)", counts['present']+counts['late'], "MetricGreen"))
+        stats.addWidget(make_metric("Not visited", counts['excused']+counts['absent'], "MetricRed"))
+        stats.addWidget(make_metric("Attendance Rate", format_percent(counts['rate']), "MetricBlue"))
         layout.addLayout(stats)
+        states = QLabel(f"On time: {counts['present']} | Late: {counts['late']} | Excused: {counts['excused']} | "
+                        f"Unexcused: {counts['absent']} | Unknown: {counts['unknown']}")
+        states.setWordWrap(True)
+        layout.addWidget(states)
 
         table = self._make_table("Student Details")
         table_layout = table.layout()
@@ -915,22 +985,27 @@ class MainWindow(QMainWindow):
         subtitle.setObjectName("DetailMeta")
         header_layout.addWidget(title)
         header_layout.addWidget(subtitle)
+        journal = QPushButton('Dated group roster and academic results')
+        journal.clicked.connect(lambda checked=False: self.show_journal_workspace(group_id=group.id))
+        header_layout.addWidget(journal)
         layout.addWidget(header)
 
         stats_data = self.repository.group_stats(group)
         stats = QHBoxLayout()
         stats.setSpacing(18)
-        stats.addWidget(make_metric("Group Average", stats_data["overall"], "MetricBlue"))
-        stats.addWidget(make_metric("Lab Work Average", stats_data["lab"], "MetricGreen"))
-        stats.addWidget(make_metric("Test Average", stats_data["test"], "MetricRed"))
+        stats.addWidget(make_metric("Legacy average", stats_data["overall"], "MetricBlue"))
+        stats.addWidget(make_metric("Legacy lab average", stats_data["lab"], "MetricGreen"))
+        stats.addWidget(make_metric("Legacy test average", stats_data["test"], "MetricRed"))
         stats.addWidget(make_metric("Attendance Rate", format_percent(stats_data["attendance"]), "MetricPurple"))
         layout.addLayout(stats)
+
+        layout.addWidget(self._academic_results_panel(stats_data['academic']['students']))
 
         table = self._make_table("Students")
         table_layout = table.layout()
         table_layout.addWidget(
             make_table_row(
-                ["Name", "Overall Average", "Lab Average", "Test Average", "Attendance", "Actions"],
+                ["Name", "Legacy average", "Legacy lab average", "Legacy test average", "Attendance", "Actions"],
                 "TableHeader",
             )
         )
@@ -1094,7 +1169,7 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(group_link)
         header_layout.addWidget(email)
         results_button = QPushButton("Discipline results and debts")
-        results_button.clicked.connect(lambda checked=False: self.show_teaching_workspace(student_id=student.id))
+        results_button.clicked.connect(lambda checked=False: self.show_journal_workspace(student_id=student.id))
         header_layout.addWidget(results_button, alignment=Qt.AlignmentFlag.AlignLeft)
         if student.status == "active":
             actions = QHBoxLayout()
@@ -1129,17 +1204,18 @@ class MainWindow(QMainWindow):
         stats_data = self.repository.student_stats(student)
         stats = QHBoxLayout()
         stats.setSpacing(18)
-        stats.addWidget(make_metric("Overall Average", stats_data["overall"], "MetricBlue"))
-        stats.addWidget(make_metric("Lab Average", stats_data["lab"], "MetricGreen"))
-        stats.addWidget(make_metric("Test Average", stats_data["test"], "MetricRed"))
+        stats.addWidget(make_metric("Legacy average", stats_data["overall"], "MetricBlue"))
+        stats.addWidget(make_metric("Legacy lab average", stats_data["lab"], "MetricGreen"))
+        stats.addWidget(make_metric("Legacy test average", stats_data["test"], "MetricRed"))
         stats.addWidget(make_metric("Attendance", format_percent(stats_data["attendance"]), "MetricPurple"))
         layout.addLayout(stats)
 
-        records = self._make_table("Lesson Records")
+        layout.addWidget(self._academic_results_panel([stats_data['academic']]))
+        records = self._make_table("Legacy Lesson Records")
         records_layout = records.layout()
         records_layout.addWidget(
             make_table_row(
-                ["Date", "Lesson", "Type", "Attendance", "Score", "Comment"],
+                ["Date", "Lesson", "Type", "Attendance", "Legacy score", "Comment"],
                 "TableHeader",
             )
         )
@@ -1155,6 +1231,32 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         self.current_route = ("student", student.id)
         self._show_detail_page(page)
+
+    def _academic_results_panel(self, students):
+        panel = self._make_table('Academic results by discipline and module')
+        body = panel.layout()
+        body.addWidget(make_table_row(['Student', 'Discipline / period', 'Module', 'Earned', 'Maximum', 'Outstanding'], 'TableHeader'))
+        found = False
+        for student in students:
+            for course in student['courses']:
+                found = True
+                label = f"{course['name']} | {course['year_name']} / {course['term_name']}"
+                body.addWidget(make_table_row([student['name'], label, 'Course total', course['earned'], course['maximum'],
+                    ', '.join(row['title'] for row in course['debts']) or '-']))
+                for module in course['modules']:
+                    body.addWidget(make_table_row([student['name'], label, module['name'], module['earned'], module['maximum'], '']))
+            counts = student['attendance']
+            description = QLabel(f"{student['name']}: present {counts['present']}, late {counts['late']}, "
+                                 f"excused {counts['excused']}, unexcused {counts['absent']}, unknown {counts['unknown']}")
+            description.setWordWrap(True)
+            body.addWidget(description)
+            if student['warnings']:
+                warning = QLabel(' '.join(student['warnings']))
+                warning.setWordWrap(True)
+                body.addWidget(warning)
+        if not found:
+            body.addWidget(QLabel('No classified academic results in this view'))
+        return panel
 
     def _make_lesson_student_row(self, lesson: Lesson, student: Student) -> QFrame:
         attendance = self.repository.attendance_for(lesson, student)
@@ -1183,6 +1285,7 @@ class MainWindow(QMainWindow):
         attendance_input = QCheckBox(status.title() + (f" ({late_seconds // 60} min)" if late_seconds else ""))
         attendance_input.setObjectName("InlineCheckBox")
         attendance_input.setChecked(attendance is not None and attendance.is_visited)
+        attendance_input.setEnabled(lesson.date <= date.today())
 
         comment_input = QLineEdit(comment.data if comment is not None and comment.data else "")
         comment_input.setObjectName("InlineTextInput")
@@ -1209,6 +1312,22 @@ class MainWindow(QMainWindow):
         attendance_button = make_link_button("Attendance history")
         attendance_button.clicked.connect(lambda checked=False: self.show_attendance_editor(lesson, student))
         actions_layout.addWidget(attendance_button)
+        more = QToolButton()
+        more.setText('...')
+        more.setToolTip('Attendance states, documents and behavior events')
+        more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(more)
+        menu.addAction('Attendance states and corrections', lambda: self.show_attendance_editor(lesson, student))
+        menu.addAction('Attendance documents', lambda: self.show_attendance_proof(lesson, student))
+        menu.addAction('Seating', lambda: self.show_seating_workspace(lesson.id))
+        from app.services.journal_activity import TYPICAL_CATEGORIES
+        for polarity, title in (('positive', 'Positive event'), ('negative', 'Remark')):
+            submenu = menu.addMenu(title)
+            for name, kind in TYPICAL_CATEGORIES:
+                if kind == polarity:
+                    submenu.addAction(name, lambda checked=False, current=name: self.record_behavior_for_student(lesson, student, current))
+        more.setMenu(menu)
+        actions_layout.addWidget(more)
 
         save_current_row = (
             lambda *args, current_lesson=lesson, current_student=student: (
@@ -1251,7 +1370,7 @@ class MainWindow(QMainWindow):
                 format_short_date(lesson.date),
                 lesson_button,
                 lesson.schedule.type,
-                "Present" if attendance is not None and attendance.is_visited else "Not set",
+                self.repository.attendance_state(lesson, student)[0].title(),
                 mark.data if mark is not None else "-",
                 comment.data if comment is not None and comment.data else "-",
             ]

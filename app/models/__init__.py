@@ -25,6 +25,9 @@ from app.models.education import (
     EventCancellation, AttendanceRevision, NonTeachingDay, LessonDisposition,
     IndividualPlan, PlanStage, PlanEntry, TeachingAudit,
 )
+from app.models.journal_activity import (Classroom, SeatingLayout, Seat, LessonLayout,
+                                         SeatAssignment, BehaviorCategory, BehaviorEvent, BehaviorCorrection)
+from app.models.attendance_proof import ProofDocument, ProofChunk
 
 __all__ = [
     "Base",
@@ -44,4 +47,6 @@ __all__ = [
     "ChecklistVersion", "ChecklistCriterion", "CriterionAnswer", "ResultCorrection",
     "EventCancellation", "AttendanceRevision", "NonTeachingDay", "LessonDisposition",
     "IndividualPlan", "PlanStage", "PlanEntry", "TeachingAudit",
+    "Classroom", "SeatingLayout", "Seat", "LessonLayout", "SeatAssignment",
+    "BehaviorCategory", "BehaviorEvent", "BehaviorCorrection", "ProofDocument", "ProofChunk",
 ]

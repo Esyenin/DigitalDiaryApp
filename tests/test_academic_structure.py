@@ -64,7 +64,8 @@ def test_legacy_calendar_import_is_once_and_academic_export_contains_context(rep
     assert len(list(repo.session.scalars(select(AcademicYear)))) == 1
     path = repo.export_to_xlsx(tmp_path / "complete.xlsx")
     preview = repo.preview_import_from_xlsx(path, strategy="standard")
-    assert preview.archive_version == 1
+    from app.ui.data.teaching_archive import VERSION
+    assert preview.archive_version == VERSION
     assert preview.data["academic_terms"][0]["origin"] == "legacy_settings"
     assert len(preview.data["academic_years"]) == 1
 

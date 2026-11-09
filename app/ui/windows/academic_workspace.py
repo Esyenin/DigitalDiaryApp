@@ -45,6 +45,9 @@ class AcademicWorkspace(QWidget):
                 close = QPushButton("Close selected term")
                 close.clicked.connect(self.close_term)
                 page_layout.addWidget(close)
+                journal = QPushButton('Journal for selected period')
+                journal.clicked.connect(self.open_period_journal)
+                page_layout.addWidget(journal)
             self.tabs.addTab(page, name)
         layout.addWidget(self.tabs)
         self.refresh()
@@ -171,3 +174,8 @@ class AcademicWorkspace(QWidget):
             QMessageBox.warning(self, "Close term", str(exc))
             return
         self.refresh()
+
+    def open_period_journal(self):
+        item = self.lists[AcademicTerm].currentItem()
+        if item is not None:
+            self.window.show_journal_workspace(term_id=item.data(Qt.ItemDataRole.UserRole))

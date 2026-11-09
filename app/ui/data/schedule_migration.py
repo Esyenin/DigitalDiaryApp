@@ -176,7 +176,7 @@ def _migrate(connection) -> None:
                 earliest_lesson = connection.execute(
                     text("SELECT MIN(date) FROM lessons WHERE schedule_id = :schedule_id"),
                     {"schedule_id": schedule_id},
-                ).scalar()
+                ).scalar() if inspector.has_table('lessons') else None
                 start = min("1900-01-01", str(earliest_lesson)) if earliest_lesson else "1900-01-01"
                 connection.execute(
                     text(

@@ -1,11 +1,11 @@
 """Embedded teaching workflows. All writes go through repository actions."""
 
-from datetime import timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 from time import monotonic
 from uuid import uuid4
 
-from PySide6.QtCore import QDate, QDateTime, Qt, QTimer
+from PySide6.QtCore import QDate, QDateTime, QTimeZone, Qt, QTimer
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDateEdit, QDateTimeEdit,
     QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea,
@@ -22,6 +22,7 @@ from app.ui.data.repository import RepositoryError
 
 def utc_editor():
     editor = QDateTimeEdit(QDateTime.currentDateTimeUtc())
+    editor.setTimeZone(QTimeZone.utc())
     editor.setCalendarPopup(True)
     editor.setDisplayFormat("yyyy-MM-dd HH:mm 'UTC'")
     return editor
@@ -33,7 +34,7 @@ def value(field):
     if isinstance(field, QCheckBox):
         return field.isChecked()
     if isinstance(field, QDateTimeEdit):
-        return field.dateTime().toPython().replace(tzinfo=timezone.utc)
+        return datetime.fromtimestamp(field.dateTime().toMSecsSinceEpoch() / 1000, timezone.utc)
     if isinstance(field, QDateEdit):
         return field.date().toPython()
     if isinstance(field, QSpinBox):
@@ -127,6 +128,9 @@ class TeachingWorkspace(QWidget):
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self.refresh)
         layout.addWidget(refresh)
+        analytics = QPushButton('Discipline journal and statistics')
+        analytics.clicked.connect(lambda checked=False: self.window.show_journal_workspace(offering_id=self.offering.currentData()))
+        layout.addWidget(analytics)
         self.reload_context(offering_id, student_id)
         self.offering.currentIndexChanged.connect(self.course_changed)
         self.student.currentIndexChanged.connect(self.refresh)
@@ -313,7 +317,7 @@ class TeachingWorkspace(QWidget):
         from app.models import Attendance
         attendances = [r.id for r in self.rows(Attendance, Attendance.student_id == student, Attendance.lesson_id.in_(ids))]
         for record in self.rows(AttendanceRevision, AttendanceRevision.attendance_id.in_(attendances)):
-            add("Calendar / attendance", f"{record.occurred_at}: {record.status} | Arrival {record.arrived_at} | "
+            add("Calendar / attendance", f"{record.occurred_at}: {record.previous_status or 'unknown'} -> {record.status} | Arrival {record.arrived_at} | "
                 f"Late seconds {record.late_seconds} | {record.reason} | {record.source}")
 
     def create_module(self):
@@ -329,7 +333,7 @@ class TeachingWorkspace(QWidget):
         enabled = QCheckBox()
         due.setEnabled(False)
         enabled.toggled.connect(due.setEnabled)
-        category_field = options('seminar_start', 'seminar_end', 'lab', 'checkpoint', 'additional')
+        category_field = options('checkpoint', 'lab', 'additional', 'seminar_start', 'seminar_end')
         if category is not None:
             category_field.setCurrentIndex(category_field.findData(category))
         custom_type = QLineEdit()
@@ -339,6 +343,8 @@ class TeachingWorkspace(QWidget):
             lambda _: custom_type.setEnabled(category_field.currentData() == 'additional'))
         policy = choices([('Choose attempt policy', None), ('Best', 'best'), ('Latest', 'latest')])
         def convert(data):
+            if data['category'] in {'seminar_start', 'seminar_end'} and data['lesson_id'] is None:
+                raise ValueError('Select a concrete lesson for a seminar test.')
             if data['attempt_policy'] is None:
                 raise ValueError('Choose best or latest attempt policy.')
             data['due_at'] = data['due_at'] if data.pop('has_due') else None

@@ -23,11 +23,22 @@ def ensure_academic_schema(engine):
             if engine.dialect.name == "sqlite":
                 _backup_before_academic_upgrade(connection)
             Base.metadata.create_all(connection)
+            revision_columns = {item['name'] for item in inspect(connection).get_columns('attendance_revisions')}
+            for name, definition in {
+                'previous_status': 'VARCHAR(16)',
+                'previous_arrived_at': 'TIMESTAMP WITH TIME ZONE' if engine.dialect.name == 'postgresql' else 'DATETIME',
+                'previous_late_seconds': 'INTEGER',
+            }.items():
+                if name not in revision_columns:
+                    connection.exec_driver_sql(f'ALTER TABLE attendance_revisions ADD COLUMN {name} {definition}')
             event_columns = {item["name"] for item in inspect(connection).get_columns("assessment_events")}
             if "custom_type" not in event_columns:
                 connection.exec_driver_sql(
                     "ALTER TABLE assessment_events ADD COLUMN custom_type VARCHAR(128)"
                 )
+            if 'configured_at' not in event_columns:
+                connection.exec_driver_sql('ALTER TABLE assessment_events ADD COLUMN configured_at ' +
+                    ('TIMESTAMP WITH TIME ZONE' if engine.dialect.name == 'postgresql' else 'DATETIME'))
             attempt_columns = {item["name"] for item in inspect(connection).get_columns("assessment_attempts")}
             if "finalized" not in attempt_columns:
                 connection.exec_driver_sql(
@@ -238,6 +249,7 @@ def _education_guards(connection):
         ("EXISTS (SELECT 1 FROM groups WHERE id=NEW.group_id AND is_archived)", "cannot add archived offering group"),
     ]
     checks["assessment_events"] += [
+        ("NEW.category IN ('seminar_start','seminar_end') AND NEW.lesson_id IS NULL", "seminar test requires a lesson"),
         ("NEW.lesson_id IS NOT NULL AND NEW.category IN ('seminar_start','seminar_end') AND EXISTS (SELECT 1 FROM assessment_events e WHERE e.lesson_id=NEW.lesson_id AND e.category=NEW.category AND NOT EXISTS (SELECT 1 FROM event_cancellations cancelled WHERE cancelled.event_id=e.id))", "active seminar test slot already configured"),
         ("NEW.lesson_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM lessons l JOIN schedules s ON s.id=l.schedule_id JOIN teaching_modules m ON m.id=NEW.module_id WHERE l.id=NEW.lesson_id AND s.offering_id=m.offering_id AND l.date >= m.start_date AND l.date < m.end_date)", "event lesson and module context mismatch"),
     ]
@@ -291,6 +303,9 @@ def _education_guards(connection):
     checks["non_teaching_days"] += [(f"NOT EXISTS (SELECT 1 FROM academic_terms t WHERE t.id=NEW.term_id AND NEW.date >= t.start_date AND NEW.date < {term_end})", "non teaching day outside term")]
     checks["plan_entries"] += [("NEW.consultation_visit_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM plan_stages s JOIN individual_plans p ON p.id=s.plan_id JOIN consultation_visits v ON v.student_id=p.student_id WHERE s.id=NEW.stage_id AND v.id=NEW.consultation_visit_id)", "plan consultation student mismatch")]
     checks["attendance_revisions"] += [
+        ("NEW.previous_status IS NOT NULL AND NEW.previous_status NOT IN ('present','absent','late','excused')", "invalid previous attendance state"),
+        ("NEW.previous_status IS NOT NULL AND NEW.previous_status <> COALESCE((SELECT status FROM attendance_revisions WHERE attendance_id=NEW.attendance_id ORDER BY id DESC LIMIT 1), (SELECT CASE WHEN is_visited THEN 'present' ELSE 'absent' END FROM attendances WHERE id=NEW.attendance_id))", "previous attendance state does not match history"),
+        (f"EXISTS (SELECT 1 FROM attendances a JOIN lessons l ON l.id=a.lesson_id WHERE a.id=NEW.attendance_id AND l.date > {today})", "future attendance is forbidden"),
         ("trim(NEW.reason)='' OR trim(NEW.source)=''", "attendance revision requires reason and source"),
         ("NEW.late_seconds IS NOT NULL AND NEW.late_seconds < 0", "late seconds cannot be negative"),
     ]
@@ -358,6 +373,10 @@ def _education_guards(connection):
         (f"EXISTS (SELECT 1 FROM attendance_revisions WHERE attendance_id=OLD.id) AND (NEW.id {different} OLD.id OR NEW.student_id {different} OLD.student_id OR NEW.lesson_id {different} OLD.lesson_id OR NEW.is_visited {different} ({latest}))", "attendance projection must match latest revision")])
     guard("attendances", "revision_delete", "DELETE", [
         ("EXISTS (SELECT 1 FROM attendance_revisions WHERE attendance_id=OLD.id)", "attendance with revisions cannot be deleted")])
+    guard("attendances", "future_insert", "INSERT", [
+        (f"EXISTS (SELECT 1 FROM lessons WHERE id=NEW.lesson_id AND date > {today})", "future attendance is forbidden")])
+    guard("attendances", "future_update", "UPDATE", [
+        (f"(NEW.lesson_id {different} OLD.lesson_id OR NEW.student_id {different} OLD.student_id OR NEW.is_visited {different} OLD.is_visited) AND EXISTS (SELECT 1 FROM lessons WHERE id=NEW.lesson_id AND date > {today})", "future attendance is forbidden")])
 
     # Raw SQL updates deliberately omit updated_at: revisions change the cached
     # boolean, not the timestamp of the original legacy attendance record.
